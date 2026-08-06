@@ -20,17 +20,25 @@ const sendMessage = () => {
       timestamp: new Date().toLocaleTimeString(),
       role: 'user',
     })
-    message.value = ''
     waiting.value = true
     // 模拟接收消息
-    setTimeout(() => {
+    fetch('http://localhost:3000/chat/message', {
+      method:"POST",
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ content:message.value })
+    }).then(response => response.json())
+    .then(data => {
+      console.log('Response from server:', data);
       messageList.push({
-        content: '这是自动回复的消息',
+        content: data.content,
         timestamp: new Date().toLocaleTimeString(),
-        role: 'assistant',
+        role: data.role
       })
       waiting.value = false
-    }, 2400)
+      message.value = ''
+    })
   }
 }
 const focusInput = () => {
