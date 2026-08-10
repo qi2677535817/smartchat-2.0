@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, watch, nextTick } from 'vue'
+import { renderMarkdown } from '@/utils/markdown'
 
 interface Message {
   content: string
@@ -13,7 +14,7 @@ const waiting = ref(false)
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
-const sendMessage = () => {
+const sendMessage = async () => {
   if (message.value.trim() !== '' && !waiting.value) {
     messageList.push({
       content: message.value,
@@ -22,23 +23,37 @@ const sendMessage = () => {
     })
     waiting.value = true
     // 模拟接收消息
-    fetch('http://localhost:3000/chat/message', {
-      method:"POST",
+    let res = await fetch('http://localhost:3000/chat/stream', {
+      method: "POST",
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ content:message.value })
-    }).then(response => response.json())
-    .then(data => {
-      console.log('Response from server:', data);
-      messageList.push({
-        content: data.content,
-        timestamp: new Date().toLocaleTimeString(),
-        role: data.role
-      })
-      waiting.value = false
-      message.value = ''
+      body: JSON.stringify({ content: message.value })
     })
+    let read = res.body?.getReader()
+    let decoder = new TextDecoder()
+    messageList.push({
+      content: '',
+      timestamp: new Date().toLocaleTimeString(),
+      role: 'assistant',
+    })
+    let buffer = ''
+    while (true) {
+      const { done, value } = await read!.read()
+      if (done) break
+      let chunk = decoder.decode(value)
+      buffer += chunk
+      let lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (let line of lines) {
+        if (line.trim() === '') continue
+        if (!line.startsWith('data:')) continue
+        const event = JSON.parse(line.slice(5).trim())
+        messageList[messageList.length - 1]!.content += event.content
+      }
+    }
+    waiting.value = false
+    message.value = ''
   }
 }
 const focusInput = () => {
@@ -61,7 +76,10 @@ watch(messageList, async () => {
     <!-- 背景 -->
     <div class="message-list" ref="messageListRef">
       <div v-for="(item, index) in messageList" :key="index" :class="['rows', item.role]">
-        <div class="rows-box">{{ item.content }}</div>
+        <!-- 用户消息，纯文本 -->
+        <div v-if="item.role === 'user'" class="rows-box">{{ item.content }}</div>
+        <!-- 助手消息，支持 Markdown -->
+        <div v-else-if="item.role === 'assistant'" class="rows-box" v-html="renderMarkdown(item.content)"></div>
       </div>
       <div v-if="waiting" class="assistant waiting">
         <div class="waiting-box">思考中<span></span><span></span><span></span></div>
@@ -69,14 +87,8 @@ watch(messageList, async () => {
     </div>
     <!-- 输入框 -->
     <div class="message-container" @click="focusInput">
-      <textarea
-        ref="textareaRef"
-        v-model="message"
-        rows="5"
-        placeholder="输入消息"
-        aria-label="输入消息"
-        @keydown.enter.exact.prevent="sendMessage"
-      ></textarea>
+      <textarea ref="textareaRef" v-model="message" rows="5" placeholder="输入消息" aria-label="输入消息"
+        @keydown.enter.exact.prevent="sendMessage"></textarea>
       <div class="nav-list">
         <button @click="sendMessage" :disabled="waiting">发送</button>
       </div>
@@ -98,11 +110,14 @@ watch(messageList, async () => {
   flex-direction: column;
   padding: 15px;
   box-sizing: border-box;
+
   .rows {
     display: flex;
   }
+
   .user {
     justify-content: flex-end;
+
     .rows-box {
       background-color: #1a95e7;
       color: #fff;
@@ -116,8 +131,10 @@ watch(messageList, async () => {
       border-radius: 15px 15px 0 15px;
     }
   }
+
   .assistant {
     justify-content: flex-start;
+
     .rows-box {
       background-color: #e6e6e6;
       color: #000;
@@ -127,13 +144,65 @@ watch(messageList, async () => {
       max-width: 70%;
       word-wrap: break-word;
       border-radius: 0 15px 15px 15px;
+
+      // :deep() 让样式作用于 v-html 生成的子元素
+      :deep(h1) {
+        font-size: 1.4em;
+        margin: 0.8em 0 0.4em; 
+      }
+      :deep(h2) { margin: 0.8em 0 0.4em; }
+      :deep(p) {
+        margin: 0.5em 0;
+      }
+
+      :deep(pre) {
+        background: #282c34;
+        color: #abb2bf;
+        padding: 10px;
+        border-radius: 6px;
+        overflow-x: auto;
+      }
+
+      :deep(code) {
+        background: #f0f0f0;
+        padding: 2px 4px;
+        border-radius: 3px;
+      }
+
+      :deep(pre code) {
+        background: none;
+        padding: 0;
+      }
+
+      :deep(ul) {
+        padding-left: 1.5em;
+        margin: 0.5em 0;
+      }
+
+      :deep(ol) {
+        padding-left: 1.5em;
+      }
+      :deep(li) { margin: 0.3em 0; }
+      :deep(hr) { margin: 1em 0; border: 1px solid #e0e0e0;}
+      :deep(blockquote) {
+        margin: 1.2em 0;
+        padding: 12px 16px;
+        border-left: 4px solid #8b5cf6; /* 紫色 */
+        border-radius: 6px;
+        background: rgba(139, 92, 246, 0.06);
+        font-size: 0.95em;
+        color: #4b5563;
+      }
     }
   }
+
   .waiting {
     display: flex;
+
     .waiting-box {
       display: flex;
       align-items: center;
+
       span {
         width: 6px;
         height: 6px;
@@ -142,28 +211,35 @@ watch(messageList, async () => {
         margin: 0 2px;
         animation: blink 1.2s infinite;
       }
+
       span:nth-child(1) {
         margin-left: 5px;
       }
+
       span:nth-child(2) {
         animation-delay: 0.2s;
       }
+
       span:nth-child(3) {
         animation-delay: 0.4s;
       }
     }
   }
+
   @keyframes blink {
+
     0%,
     80%,
     100% {
       opacity: 0.25;
     }
+
     40% {
       opacity: 1;
     }
   }
 }
+
 /**
   * 消息列表样式
 */
@@ -172,6 +248,7 @@ watch(messageList, async () => {
   overflow-y: auto;
   padding: 15px;
 }
+
 /**
   * 消息输入框样式
 */
@@ -185,6 +262,7 @@ watch(messageList, async () => {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+
   textarea {
     border: none;
     width: 100%;
@@ -192,16 +270,19 @@ watch(messageList, async () => {
     font-size: 18px;
     field-sizing: content;
     max-height: 200px;
+
     &:focus,
     &:active {
       outline: none;
       // box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
     }
   }
+
   .nav-list {
     margin-top: 10px;
     display: flex;
     justify-content: flex-end;
+
     button {
       padding: 8px 20px;
       background-color: #007bff;
@@ -209,6 +290,7 @@ watch(messageList, async () => {
       border: none;
       border-radius: 10px;
       cursor: pointer;
+
       &:hover {
         background-color: #0056b3;
       }
