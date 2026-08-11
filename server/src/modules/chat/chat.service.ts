@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { MessageEvent } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ChatMessageDto } from './chat.dto';
 
 @Injectable()
 export class ChatService {
@@ -13,57 +14,19 @@ export class ChatService {
     this.DEEPSEEK_API_KEY = this.configService.get('DEEPSEEK_API_KEY')!;
   }
 
-  async sendChatMessage(content: string) {
-    const response = await fetch( this.DEEPSEEK_BASE_URL , {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.DEEPSEEK_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'deepseek-v4-flash',
-        messages: [{
-          role: 'user',
-          content: content
-        }],
-        stream: false
-      })
-    });
+  async sendChatMessage(messages: ChatMessageDto['messages'], model: ChatMessageDto['model']): Promise<any> {
+    const response = await this.requestChat(messages, false, model);
     if (!response.ok) {
-      throw new Error(`Failed to send chat message: ${response.status} ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`DeepSeek API 错误 ${response.status}:${errorText}`);
     }
     const data = await response.json();
     return data.choices[0].message;
   }
-  streamChat(content: string): Observable<MessageEvent> {
+  streamChat(messages: ChatMessageDto['messages'], model: ChatMessageDto['model']): Observable<MessageEvent> {
     return new Observable((observer) => {
       // 1. 调 DeepSeek API, stream: true
-      fetch( this.DEEPSEEK_BASE_URL , {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.DEEPSEEK_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'deepseek-v4-flash',
-          messages: [
-            {
-              role: 'system',
-              content:`你是 SmartChat 智能助手。请遵循以下输出规范：
-                1. 标题：使用 ##  时 # 后必须有空格
-                2. 列表：使用 -  或 1.  时符号后必须有空格
-                3. 段落：段落之间用空行（\n\n）分隔
-                4. 代码块：用三个反引号包裹
-              `
-            },
-            {
-              role: 'user',
-              content: content
-            }
-          ],
-          stream: true
-        })
-      })
+      this.requestChat(messages!, true, model)
         .then(async (response) => {
           if (!response.ok) {
             const errorText = await response.text();
@@ -106,9 +69,15 @@ export class ChatService {
                 return;
               }
               const parsed = JSON.parse(jsonStr);
-              const content = parsed.choices[0].delta.content;
-              if(content) {
-                observer.next({ data: {content} });
+              const delta = parsed.choices[0].delta;
+              const reasoning = delta.reasoning_content;
+              const answer = delta.content;
+              
+              if(reasoning) {
+                observer.next({ data: { type: 'reasoning', content: reasoning } });
+              }
+              if(answer) {
+                observer.next({ data: { type: 'answer', content: answer } });
               }
             }
           }
@@ -117,6 +86,31 @@ export class ChatService {
         .catch(error => {
           observer.error(error);
         })
+    })
+  }
+  private async requestChat(messages: ChatMessageDto['messages'], stream: boolean, model: ChatMessageDto['model']) {
+    return fetch(this.DEEPSEEK_BASE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.DEEPSEEK_API_KEY}`
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content:`你是 SmartChat 智能助手。请遵循以下输出规范：
+              1. 标题：使用 ##  时 # 后必须有空格
+              2. 列表：使用 -  或 1.  时符号后必须有空格
+              3. 段落：段落之间用空行（\n\n）分隔
+              4. 代码块：用三个反引号包裹
+            `
+          },
+          ...(messages ?? [])
+        ],
+        stream
+      })
     })
   }
 }

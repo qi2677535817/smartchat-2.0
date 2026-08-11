@@ -1,16 +1,32 @@
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick } from 'vue'
+import { ref, reactive, watch, nextTick, Transition } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 
 interface Message {
   content: string
-  timestamp: string
-  role: string
+  role: 'user' | 'assistant',
+  reasoning_content?: string,
+  showReasoning?: boolean
 }
 
 const message = ref('')
 const messageList = reactive<Message[]>([])
 const waiting = ref(false)
+const showLLM = ref(false)
+const llmList =  ref([
+  {
+    name:"deepseek-v4-flash",
+    icon:"https://deepseek.ai/static/media/deepseek-v4-flash.7e0f3c1d.png"
+  },
+  {
+    name:"deepseek-v4-pro",
+    icon:"https://deepseek.ai/static/media/deepseek-v4-pro.7e0f3c1d.png"
+  }
+])
+const llmModel = reactive({
+  name: llmList.value[0]!.name,
+  icon: llmList.value[0]!.icon
+})
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
@@ -18,24 +34,29 @@ const sendMessage = async () => {
   if (message.value.trim() !== '' && !waiting.value) {
     messageList.push({
       content: message.value,
-      timestamp: new Date().toLocaleTimeString(),
-      role: 'user',
+      role: 'user'
     })
     waiting.value = true
-    // 模拟接收消息
+    const messages = messageList.map(item => ({
+      role: item.role,
+      content: item.content,
+      reasoning_content: item.reasoning_content
+    }))
+
+    // 重组消息列表，添加系统消息
     let res = await fetch('http://localhost:3000/chat/stream', {
       method: "POST",
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ content: message.value })
+      body: JSON.stringify({messages, model: llmModel.name}),
     })
     let read = res.body?.getReader()
     let decoder = new TextDecoder()
     messageList.push({
       content: '',
-      timestamp: new Date().toLocaleTimeString(),
       role: 'assistant',
+      showReasoning: false
     })
     let buffer = ''
     while (true) {
@@ -49,7 +70,11 @@ const sendMessage = async () => {
         if (line.trim() === '') continue
         if (!line.startsWith('data:')) continue
         const event = JSON.parse(line.slice(5).trim())
-        messageList[messageList.length - 1]!.content += event.content
+        if(event.type === 'reasoning') {
+          messageList[messageList.length - 1]!.reasoning_content = (messageList[messageList.length - 1]!.reasoning_content ?? '') + event.content
+        }else {
+          messageList[messageList.length - 1]!.content = (messageList[messageList.length - 1]!.content ?? '') + event.content
+        }
       }
     }
     waiting.value = false
@@ -63,6 +88,15 @@ const focusInput = () => {
   }
 }
 const messageListRef = ref<HTMLDivElement | null>(null)
+const pickLLM = (item: { name: string; icon: string }) => {
+  if (llmModel.name === item.name) {
+    showLLM.value = !showLLM.value
+    return
+  }
+  llmModel.name = item.name
+  llmModel.icon = item.icon
+  showLLM.value = !showLLM.value
+}
 watch(messageList, async () => {
   await nextTick()
   if (messageListRef.value) {
@@ -79,10 +113,21 @@ watch(messageList, async () => {
         <!-- 用户消息，纯文本 -->
         <div v-if="item.role === 'user'" class="rows-box">{{ item.content }}</div>
         <!-- 助手消息，支持 Markdown -->
-        <div v-else-if="item.role === 'assistant'" class="rows-box" v-html="renderMarkdown(item.content)"></div>
-      </div>
-      <div v-if="waiting" class="assistant waiting">
-        <div class="waiting-box">思考中<span></span><span></span><span></span></div>
+        <div v-else-if="item.role === 'assistant'" class="rows-box">
+          <div v-if="waiting && index === messageList.length - 1" class="assistant waiting">
+            <div class="waiting-box">思考中<span></span><span></span><span></span></div>
+          </div>
+          <div v-if="item.reasoning_content" class="reasoning">
+            <!-- 点击折叠推理过程 -->
+            <div class="reasoning-title" @click="item.showReasoning = !item.showReasoning">
+            推理过程 <span class="arrow" :class="{rotated: (item.showReasoning || (waiting && index === messageList.length - 1))}">⬆️</span></div>
+            <div class="reasoning-wrap" :class="{ open: item.showReasoning || (waiting && index === messageList.length - 1) }">
+              <div v-if="item.showReasoning || (waiting && index === messageList.length - 1)" 
+              v-html="renderMarkdown(item.reasoning_content)" class="reasoning-content"></div>
+            </div>
+          </div>
+          <div v-html="renderMarkdown(item.content)"></div>
+        </div>
       </div>
     </div>
     <!-- 输入框 -->
@@ -90,6 +135,16 @@ watch(messageList, async () => {
       <textarea ref="textareaRef" v-model="message" rows="5" placeholder="输入消息" aria-label="输入消息"
         @keydown.enter.exact.prevent="sendMessage"></textarea>
       <div class="nav-list">
+        <div class="llm-box">
+          <div class="llm-list" v-if="showLLM">
+            <div v-for="(item, index) in llmList" :key="index" class="llm-item" @click="pickLLM(item)">
+              {{ item.name }}
+            </div>
+          </div>
+          <div class="llm-model" @click="pickLLM(llmModel)">
+            {{ llmModel.name }}
+          </div>
+        </div>
         <button @click="sendMessage" :disabled="waiting">发送</button>
       </div>
     </div>
@@ -124,26 +179,59 @@ watch(messageList, async () => {
       padding: 10px;
       border-radius: 5px;
       margin-bottom: 10px;
-      max-width: 70%;
+      max-width: 100%;
       min-width: 30px;
       text-align: center;
       word-wrap: break-word;
       border-radius: 15px 15px 0 15px;
+      margin-bottom: 30px;
+    }
+  }
+  .reasoning-wrap {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.3s ease;
+    &.open {
+      grid-template-rows: 1fr;
+    }
+    .reasoning-content {
+      overflow: hidden;
+      min-height: 0;
     }
   }
 
+  .reasoning {
+    border-bottom: 1px solid #676767;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: #676767;
+    transition: all 0.3s;
+    .reasoning-title {
+      cursor: pointer;
+      .arrow {
+        display: inline-block;
+        transition: transform 0.3s ease;
+        &.rotated {
+          transform: rotate(180deg);
+        }
+      }
+    }
+  }
   .assistant {
     justify-content: flex-start;
 
     .rows-box {
-      background-color: #e6e6e6;
+      // background-color: #e7cd8c;
       color: #000;
       padding: 10px;
       border-radius: 5px;
       margin-bottom: 10px;
-      max-width: 70%;
+      max-width: 100%;
       word-wrap: break-word;
       border-radius: 0 15px 15px 15px;
+      margin-bottom: 30px;
+      transition: all 0.3s;
 
       // :deep() 让样式作用于 v-html 生成的子元素
       :deep(h1) {
@@ -195,7 +283,44 @@ watch(messageList, async () => {
       }
     }
   }
+  .llm-box {
+    position: relative;
+    margin-right: 10px;
+    height: 100%;
+    .llm-list {
+      position: absolute;
+      top: -100px;
+      right: 0;
+      font-size: 14px;
+      background-color: #fff;
+      border: 1px solid #e6e6e6;
+      border-radius: 10px;
+      padding: 10px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      z-index: 10;
 
+      div {
+        padding: 5px 10px;
+        cursor: pointer;
+        white-space: nowrap;
+        &:hover {
+          background-color: #f5f5f5;
+        }
+      }
+    }
+    .llm-model {
+      display: flex;
+      align-items: center;
+      font-size: 14px;
+      color: #4b5563;
+      background: #f0f0f0;
+      padding: 0 10px;
+      border-radius: 10px;
+      margin-right: 10px;
+      height: 100%;
+      cursor: pointer;
+    }
+  }
   .waiting {
     display: flex;
 
@@ -282,6 +407,7 @@ watch(messageList, async () => {
     margin-top: 10px;
     display: flex;
     justify-content: flex-end;
+    align-items: center;
 
     button {
       padding: 8px 20px;

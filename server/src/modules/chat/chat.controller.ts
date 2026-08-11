@@ -8,19 +8,14 @@ import { interval, map, Observable, take } from 'rxjs';
 export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 
-  @Get()
-  getChat(content) {
-    return this.chatService.sendChatMessage(content);
-  }
-
   @Post('message')
   postChat(@Body() body: ChatMessageDto) {
-    return this.chatService.sendChatMessage(body.content);
+    return this.chatService.sendChatMessage(body.messages, body.model);
   }
 
   @Post('stream')
   @Sse()
   streamChat(@Body() body: ChatMessageDto) {
-    return this.chatService.streamChat(body.content)
+    return this.chatService.streamChat(body.messages, body.model);
   }
 }
