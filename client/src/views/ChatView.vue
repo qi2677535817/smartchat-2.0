@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick, Transition } from 'vue'
+import { ref, reactive, watch, nextTick, onMounted } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
+import { loadMessages, saveMessage } from '@/utils/storage'
 
 interface Message {
   content: string
@@ -101,6 +102,14 @@ watch(messageList, async () => {
   await nextTick()
   if (messageListRef.value) {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight
+  }
+  saveMessage(messageList)
+})
+onMounted(() => {
+  // 加载对话记录
+  const list = loadMessages()
+  if(list.length > 0 && list[0]) {
+    messageList.splice(0, messageList.length, ...list)
   }
 })
 </script>
