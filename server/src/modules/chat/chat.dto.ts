@@ -16,7 +16,7 @@ export class ChatMessageDto {
     content: string;
     reasoning_content?: string;
   }> = [];
-  
+
   @IsString()
   @IsNotEmpty()
   model: string = 'deepseek-v4-flash';
