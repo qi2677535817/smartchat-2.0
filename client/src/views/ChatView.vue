@@ -7,7 +7,9 @@ interface Message {
   content: string
   role: 'user' | 'assistant',
   reasoning_content?: string,
-  showReasoning?: boolean
+  showReasoning?: boolean,
+  renderedHtml?: string,
+  reasoningHtml?: string
 }
 
 const message = ref('')
@@ -57,7 +59,9 @@ const sendMessage = async () => {
     messageList.push({
       content: '',
       role: 'assistant',
-      showReasoning: false
+      showReasoning: false,
+      renderedHtml: '',
+      reasoningHtml: ''
     })
     let buffer = ''
     while (true) {
@@ -78,6 +82,7 @@ const sendMessage = async () => {
         }
       }
     }
+    renderLastMessage()
     waiting.value = false
     message.value = ''
   }
@@ -100,15 +105,56 @@ const pickLLM = (item: { name: string; icon: string }) => {
 }
 watch(messageList, async () => {
   await nextTick()
-  if (messageListRef.value) {
+  if (waiting.value &&messageListRef.value) {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight
+    console.log('length watch 触发了，当前长度:', messageList.length, 'waiting:', waiting.value)
   }
   saveMessage(messageList)
 })
+
+// 防抖：监听最后一条消息的变化，100ms后渲染
+const RENDER_INTERVAL = 100
+let lastRenderTime = 0
+let renderTimer: ReturnType<typeof setTimeout> | null = null 
+watch(() => {
+  // 只关心最后一条 assistant消息, 返回 content + reasoning的合并串
+  const last = messageList[messageList.length - 1]
+  if(!last || last.role !== 'assistant') return ''
+  return last.content + '|' + (last.reasoning_content ?? '')
+}, (newVal) => {
+  const now = Date.now()
+  // 情况1：已经超过 100ms 没渲染 -> 直接渲染
+  if(now - lastRenderTime >= RENDER_INTERVAL) {
+    if (renderTimer) clearTimeout(renderTimer)
+    renderLastMessage()
+    lastRenderTime = now
+    return
+  }
+  // 情況2：还没到100ms -> 设一个定时器，到时间就渲染
+  if(!renderTimer) {
+    renderTimer = setTimeout(() => {
+      renderLastMessage()
+      lastRenderTime = Date.now()
+      renderTimer = null
+    }, RENDER_INTERVAL - (now - lastRenderTime))
+  }
+})
+const renderLastMessage = () => {
+  const last = messageList[messageList.length - 1]
+  if(!last || last.role !== 'assistant') return
+  last.renderedHtml = renderMarkdown(last.content)
+  last.reasoningHtml = renderMarkdown(last.reasoning_content ?? '')
+}
 onMounted(() => {
   // 加载对话记录
   const list = loadMessages()
   if(list.length > 0 && list[0]) {
+    list.forEach((element: Message) => {
+      if(element.role === 'assistant') {
+        element.renderedHtml = renderMarkdown(element.content)
+        element.reasoningHtml = renderMarkdown(element.reasoning_content ?? '')
+      }
+    });
     messageList.splice(0, messageList.length, ...list)
   }
 })
@@ -132,10 +178,10 @@ onMounted(() => {
             推理过程 <span class="arrow" :class="{rotated: (item.showReasoning || (waiting && index === messageList.length - 1))}">⬆️</span></div>
             <div class="reasoning-wrap" :class="{ open: item.showReasoning || (waiting && index === messageList.length - 1) }">
               <div v-if="item.showReasoning || (waiting && index === messageList.length - 1)" 
-              v-html="renderMarkdown(item.reasoning_content)" class="reasoning-content"></div>
+              v-html="item.reasoningHtml" class="reasoning-content"></div>
             </div>
           </div>
-          <div v-html="renderMarkdown(item.content)"></div>
+          <div v-html="item.renderedHtml"></div>
         </div>
       </div>
     </div>
