@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick, onMounted } from 'vue'
+import { ref, reactive, watch, nextTick, onMounted, stop } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 import { loadMessages, saveMessage } from '@/utils/storage'
 
@@ -33,6 +33,7 @@ const llmModel = reactive({
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
+let abortController: AbortController | null = null
 const sendMessage = async () => {
   if (message.value.trim() !== '' && !waiting.value) {
     messageList.push({
@@ -45,7 +46,8 @@ const sendMessage = async () => {
       content: item.content,
       reasoning_content: item.reasoning_content
     }))
-
+    // 定义信号
+    abortController = new AbortController()
     // 重组消息列表，添加系统消息
     let res = await fetch('http://localhost:3000/chat/stream', {
       method: "POST",
@@ -53,6 +55,7 @@ const sendMessage = async () => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({messages, model: llmModel.name}),
+      signal: abortController.signal
     })
     let read = res.body?.getReader()
     let decoder = new TextDecoder()
@@ -64,23 +67,34 @@ const sendMessage = async () => {
       reasoningHtml: ''
     })
     let buffer = ''
-    while (true) {
-      const { done, value } = await read!.read()
-      if (done) break
-      let chunk = decoder.decode(value)
-      buffer += chunk
-      let lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (let line of lines) {
-        if (line.trim() === '') continue
-        if (!line.startsWith('data:')) continue
-        const event = JSON.parse(line.slice(5).trim())
-        if(event.type === 'reasoning') {
-          messageList[messageList.length - 1]!.reasoning_content = (messageList[messageList.length - 1]!.reasoning_content ?? '') + event.content
-        }else {
-          messageList[messageList.length - 1]!.content = (messageList[messageList.length - 1]!.content ?? '') + event.content
+    try {
+      while (true) {
+        const { done, value } = await read!.read()
+        if (done) break
+        let chunk = decoder.decode(value)
+        buffer += chunk
+        let lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (let line of lines) {
+          if (line.trim() === '') continue
+          if (!line.startsWith('data:')) continue
+          const event = JSON.parse(line.slice(5).trim())
+          if(event.type === 'reasoning') {
+            messageList[messageList.length - 1]!.reasoning_content = (messageList[messageList.length - 1]!.reasoning_content ?? '') + event.content
+          }else {
+            messageList[messageList.length - 1]!.content = (messageList[messageList.length - 1]!.content ?? '') + event.content
+          }
         }
       }
+    } catch (err){
+      if(err instanceof DOMException && err.name === 'AbortError') {
+        console.log('用户主动停止生成')
+        messageList[messageList.length - 1]!.content += '\n\n用户主动停止生成'
+      }else {
+        throw err
+      }
+    } finally {
+      abortController = null
     }
     renderLastMessage()
     waiting.value = false
@@ -107,7 +121,7 @@ watch(messageList, async () => {
   await nextTick()
   if (waiting.value &&messageListRef.value) {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight
-    console.log('length watch 触发了，当前长度:', messageList.length, 'waiting:', waiting.value)
+    // console.log('length watch 触发了，当前长度:', messageList.length, 'waiting:', waiting.value)
   }
   saveMessage(messageList)
 })
@@ -145,7 +159,10 @@ const renderLastMessage = () => {
   last.renderedHtml = renderMarkdown(last.content)
   last.reasoningHtml = renderMarkdown(last.reasoning_content ?? '')
 }
-onMounted(() => {
+const stopGeneration = () => {
+  abortController?.abort()
+}
+onMounted(async () => {
   // 加载对话记录
   const list = loadMessages()
   if(list.length > 0 && list[0]) {
@@ -156,6 +173,10 @@ onMounted(() => {
       }
     });
     messageList.splice(0, messageList.length, ...list)
+    await nextTick()
+    if(messageListRef.value) {
+      messageListRef.value.scrollTop = messageListRef.value.scrollHeight
+    }
   }
 })
 </script>
@@ -200,7 +221,8 @@ onMounted(() => {
             {{ llmModel.name }}
           </div>
         </div>
-        <button @click="sendMessage" :disabled="waiting">发送</button>
+        <button @click="stopGeneration" v-if="waiting" class="stop-btn">停止</button>
+        <button @click="sendMessage" v-else :disabled="!message.trim()">发送</button>
       </div>
     </div>
   </div>
@@ -419,7 +441,6 @@ onMounted(() => {
     }
   }
 }
-
 /**
   * 消息列表样式
 */
@@ -474,6 +495,12 @@ onMounted(() => {
 
       &:hover {
         background-color: #0056b3;
+      }
+    }
+    .stop-btn {
+      background: #000;
+      &:hover {
+        background: #484848
       }
     }
   }
