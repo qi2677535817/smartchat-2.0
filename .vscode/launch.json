@@ -1,0 +1,15 @@
+ {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "node",
+        "request": "launch",
+        "name": "Debug NestJS 后端",
+        "runtimeArgs": ["-r", "ts-node/register"],       // 用 ts-node 在运行时编译 TS
+        "program": "${workspaceFolder}/server/src/main.ts",  // 真正的入口文件
+        "cwd": "${workspaceFolder}/server",              // 在 server 目录下运行，能找到 node_modules 和 .env
+        "console": "integratedTerminal",                 // 日志显示在 VSCode
+        "skipFiles": ["<node_internals>/**"]
+      }
+    ]
+  }

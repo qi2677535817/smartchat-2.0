@@ -1,16 +1,18 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { MessageEvent } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatMessageDto, ChatMessage } from './chat.dto';
 import { tools, toolHandlers } from './tools'
+import { EmbeddingService } from '../embedding/embedding.service';
+import { log } from 'console';
 
 @Injectable()
 export class ChatService {
   private readonly DEEPSEEK_BASE_URL: string;
   private readonly DEEPSEEK_API_KEY: string;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(private readonly configService: ConfigService, private readonly embeddingService: EmbeddingService) {
     this.DEEPSEEK_BASE_URL =
       this.configService.get('DEEPSEEK_BASE_URL') ??
       'https://api.deepseek.com/v1/chat/completions';
