@@ -4,15 +4,16 @@ import { MessageEvent } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatMessageDto, ChatMessage } from './chat.dto';
 import { tools, toolHandlers } from './tools'
-import { EmbeddingService } from '../embedding/embedding.service';
-import { log } from 'console';
+import { KnowledgeBaseService } from '../knowledge-base/knowledge-base.service'
 
 @Injectable()
 export class ChatService {
   private readonly DEEPSEEK_BASE_URL: string;
   private readonly DEEPSEEK_API_KEY: string;
 
-  constructor(private readonly configService: ConfigService, private readonly embeddingService: EmbeddingService) {
+  constructor(private readonly configService: ConfigService,
+    private readonly knowledgeBaseService: KnowledgeBaseService
+  ) {
     this.DEEPSEEK_BASE_URL =
       this.configService.get('DEEPSEEK_BASE_URL') ??
       'https://api.deepseek.com/v1/chat/completions';
@@ -94,7 +95,21 @@ export class ChatService {
     const abortController = new AbortController();
     // 复制一份 messages，避免修改外部传入的数组
     let currentMessages: ChatMessage[] = [...(messages ?? [])];
-
+    // 请求之前检查本地RGA库
+    let similarity = await this.knowledgeBaseService.compareSimilarity(currentMessages[currentMessages.length - 1].content!)
+    // 这里设置对比阈值为0.5， topk为3
+    let topkList: any[] = []
+    let ragList: any[] = []
+    if(similarity.length > 0) {
+      for(let i = 0; i < similarity.length; i++) {
+        if(similarity[i].score > 0.5) {
+          topkList.push(similarity[i])
+        }
+      }
+      topkList = topkList.sort((a, b) => b.score - a.score)
+      topkList = topkList.length > 3? topkList.slice(0, 3) : topkList
+      ragList = topkList.map( item => item.content )
+    }
     try {
       while (true) {
         const response = await this.requestChat(
@@ -103,6 +118,7 @@ export class ChatService {
           model,
           abortController.signal,
           tools,
+          ragList
         );
 
         if (!response.ok) {
@@ -315,6 +331,7 @@ export class ChatService {
     model: ChatMessageDto['model'],
     signal?: AbortSignal,
     tools?: ChatMessageDto['tools'],
+    ragList?: string[],
   ) {
     const body = {
       model,
@@ -325,7 +342,8 @@ export class ChatService {
               1. 标题：使用 ##  时 # 后必须有空格
               2. 列表：使用 -  或 1.  时符号后必须有空格
               3. 段落：段落之间用空行（\n\n）分隔
-              4. 代码块：用三个反引号包裹
+              4. 代码块：用三个反引号包裹, 
+              基于以下资料回答用户问题 ${ragList?.join('\n【资料】：')} 如果资料中没有相关信息，请如实说明不知道
             `,
         },
         ...(messages ?? []),

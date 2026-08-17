@@ -1,40 +1,76 @@
-import { Injectable, OnModuleInit  } from "@nestjs/common";
+import { Injectable, OnModuleInit } from "@nestjs/common";
 import { EmbeddingService } from "../embedding/embedding.service";
-import { ChunkingUtil } from "./chunking.util"; 
+import { ChunkingUtil } from "./chunking.util";
 
 @Injectable()
-export class KnowledgeBaseService implements OnModuleInit{
-    constructor( private readonly embeddingService: EmbeddingService) {
+export class KnowledgeBaseService implements OnModuleInit {
+    constructor(private readonly embeddingService: EmbeddingService) {
     }
     private chunks: {
-        content: number[][],
-        text: string
+        vector: {
+            text: string,
+            vector: number[]
+        }[],
+        text: string,
+        source?: string,
+        index?: number,
     }[] = []
     // 向量比对相似度
-    async compareSimilarity(query: string, documents: number[][]): Promise<number[]> {
+    async compareSimilarity(query: string): Promise<{
+        current: number,
+        score: number,
+        source: string,
+        index: number,
+        content: string
+    }[]> {
         let parameter1 = await this.embeddingService.embedText(query)
-        let cosineSimilarityList: number[] = []
-        for(let j = 0; j < documents.length; j++) {
-            let sumSql1 = 0
-            let sumSql2 = 0
-            let dot1 = 0
-            for (let i = 0; i < parameter1.length; i++) {
-                dot1 += parameter1[i] * documents[j][i]
-                sumSql1 += parameter1[i] * parameter1[i]
-                sumSql2 += documents[j][i] * documents[j][i]
+        let cosineSimilarityList: {
+            current: number,
+            score: number,
+            source: string,
+            index: number,
+            content: string
+        }[] = []
+        for (let j = 0; j < this.chunks.length; j++) {          
+            for (let k = 0; k < this.chunks[j].vector.length; k++) {
+                let dot1 = 0
+                let sumSql1 = 0
+                let sumSql2 = 0
+                for (let i = 0; i < parameter1.length; i++) {
+                    dot1 += parameter1[i] * this.chunks[j].vector[k].vector[i]
+                    sumSql1 += parameter1[i] * parameter1[i]
+                    sumSql2 += this.chunks[j].vector[k].vector[i] * this.chunks[j].vector[k].vector[i]
+                }
+                let cosineSimilarity = dot1 / (Math.sqrt(sumSql1) * Math.sqrt(sumSql2))
+                cosineSimilarityList.push({
+                    current: k,
+                    score: cosineSimilarity,
+                    source: this.chunks[j].source!,
+                    index: this.chunks[j].index!,
+                    content: this.chunks[j].vector[k].text
+                })
             }
-            let cosineSimilarity = dot1 / (Math.sqrt(sumSql1) * Math.sqrt(sumSql2))
-            cosineSimilarityList.push(cosineSimilarity)
         }
         return cosineSimilarityList
     }
+    /**
+     * 添加文档
+     * @param document 文档内容数组
+     * @returns 嵌入向量数组
+     */
     async addDocument(document: string[]) {
-        let list: number[][] = []
-        if(document.length > 0) {
+        let list: {
+            text: string,
+            vector: number[]
+        }[] = []
+        if (document.length > 0) {
             // TODO: 实现文档添加逻辑
-            for(let i = 0; i < document.length; i++) {
+            for (let i = 0; i < document.length; i++) {
                 let parameter = await this.embeddingService.embedText(document[i])
-                list.push(parameter)
+                list.push({
+                    text: document[i],
+                    vector: parameter
+                })
             }
         }
         return list
@@ -49,22 +85,25 @@ export class KnowledgeBaseService implements OnModuleInit{
         let em1 = await this.addDocument(p1)
         let em2 = await this.addDocument(p2)
         let em3 = await this.addDocument(p3)
-        this.chunks.push({
-            text: text1,
-            content: em1
-        })
-         this.chunks.push({
-            text: text2,
-            content: em2
-        })
-         this.chunks.push({
-            text: text3,
-            content: em3
-        })
-        for(let i = 0; i < this.chunks.length; i++) {
-            let num = await this.compareSimilarity('今天天气咋样', this.chunks[i].content)
-            console.log(num);
-            
-        }
+        this.chunks.push(...[
+            {
+                text: text1,
+                vector: em1,
+                source: 'text1',
+                index: 0
+            },
+            {
+                text: text2,
+                vector: em2,
+                source: 'text2',
+                index: 1
+            },
+            {
+                text: text3,
+                vector: em3,
+                source: 'text3',
+                index: 2
+            }
+        ])
     }
 }
