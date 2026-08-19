@@ -6,13 +6,13 @@ import path from "node:path";
 
 @Injectable()
 export class KnowledgeBaseService implements OnModuleInit {
-    constructor(private readonly embeddingService: EmbeddingService, 
-        private readonly logger: Logger) {
+    constructor(private readonly embeddingService: EmbeddingService) {
     }
+    private readonly logger = new Logger(KnowledgeBaseService.name)
+
     private chunks: {
         vector: number[],
         text: string,
-        source?: string,
         index?: number,
         name: string
     }[] = []
@@ -20,7 +20,8 @@ export class KnowledgeBaseService implements OnModuleInit {
     async compareSimilarity(query: string): Promise<{
         score: number,
         index: number,
-        content: string
+        content: string,
+        name: string
     }[]> {
         if(this.chunks.length === 0) {
             return []
@@ -30,7 +31,8 @@ export class KnowledgeBaseService implements OnModuleInit {
         let cosineSimilarityList: {
             score: number,
             index: number,
-            content: string
+            content: string,
+            name: string
         }[] = []
         for (let k = 0; k < this.chunks.length; k++) {
             let dot1 = 0
@@ -45,7 +47,8 @@ export class KnowledgeBaseService implements OnModuleInit {
             cosineSimilarityList.push({
                 score: cosineSimilarity,
                 index: this.chunks[k].index!,
-                content: this.chunks[k].text
+                content: this.chunks[k].text,
+                name: this.chunks[k].name
             })
         }
         return cosineSimilarityList

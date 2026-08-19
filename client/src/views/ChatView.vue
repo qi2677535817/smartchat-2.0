@@ -9,7 +9,11 @@ interface Message {
   reasoning_content?: string,
   showReasoning?: boolean,
   renderedHtml?: string,
-  reasoningHtml?: string
+  reasoningHtml?: string,
+  citations?: [{
+    name: string,
+    index: number
+  }]
 }
 
 const message = ref('')
@@ -82,8 +86,10 @@ const sendMessage = async () => {
           const event = JSON.parse(line.slice(5).trim())
           if(event.type === 'reasoning') {
             messageList[messageList.length - 1]!.reasoning_content = (messageList[messageList.length - 1]!.reasoning_content ?? '') + event.content
-          }else {
+          }else if(event.type === 'answer') {
             messageList[messageList.length - 1]!.content = (messageList[messageList.length - 1]!.content ?? '') + event.content
+          }else if(event.type === 'rag') {
+            messageList[messageList.length - 1]!.citations = event.list
           }
         }
       }
@@ -248,6 +254,12 @@ onMounted(async () => {
             </div>
           </div>
           <div v-html="item.renderedHtml"></div>
+          <div v-if="item.citations && item.citations.length > 0" class="citation">
+            参考资料：
+            <div v-for="(citation, index) in item.citations" :key="index" style="margin-right: 5px;">
+              {{ citation.name }}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -324,7 +336,16 @@ onMounted(async () => {
       min-height: 0;
     }
   }
-
+  .citation {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: #676767;
+    border-top: 1px solid #676767;
+    margin-top: 10px;
+    padding-top: 5px;
+  }
   .reasoning {
     border-bottom: 1px solid #676767;
     padding-bottom: 10px;
