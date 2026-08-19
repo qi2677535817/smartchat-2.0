@@ -6,4 +6,4 @@
 ✅ 对话历史持久化（刷新不丢）
 ✅ 流式渲染节流优化
 ✅ Function Calling（时间 + 天气）
-✅ RAG 知识库（Embedding + 向量检索 + 持久化）
+✅ RAG 知识库（Embedding + 向量检索 + 持久化 + RAG入库接口 + 前端上传）

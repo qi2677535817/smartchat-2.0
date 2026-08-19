@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from "@nestjs/common";
+import { Injectable, OnModuleInit, Logger } from "@nestjs/common";
 import { EmbeddingService } from "../embedding/embedding.service";
 import { ChunkingUtil } from "./chunking.util";
 import { FsUtil } from "./fs.util";
@@ -6,13 +6,15 @@ import path from "node:path";
 
 @Injectable()
 export class KnowledgeBaseService implements OnModuleInit {
-    constructor(private readonly embeddingService: EmbeddingService) {
+    constructor(private readonly embeddingService: EmbeddingService, 
+        private readonly logger: Logger) {
     }
     private chunks: {
         vector: number[],
         text: string,
         source?: string,
         index?: number,
+        name: string
     }[] = []
     // 向量比对相似度
     async compareSimilarity(query: string): Promise<{
@@ -63,7 +65,7 @@ export class KnowledgeBaseService implements OnModuleInit {
         let document: string[] = []
         // 先对内容进行分块
         if (content.length > 0) {
-            document = ChunkingUtil.chunking(content, 50)
+            document = ChunkingUtil.chunking(content, 200)
         }
         if (document.length > 0) {
             // TODO: 实现文档添加逻辑
@@ -79,38 +81,47 @@ export class KnowledgeBaseService implements OnModuleInit {
         }
         return list
     }
-    async onModuleInit() {
-        // 读取目录
-        let menu = await FsUtil.readMenu('knowledge-data')
-        let files: {
+    /**
+     * 同名检查
+     */
+    async ingestDocument(name: string, content: string) {
+        // 对比chunks中是否有相同的name
+        if(this.chunks.length > 0 && this.chunks.some(item => item.name === name)) {
+            return { msg: '文件名已存在' }
+        } 
+        let files:{
             text,
             vector,
             name
-        }[] = []
+        }[] = [] // 初始化文件
         let embeddingData: {
             text: string,
             vector: number[],
             name: string,
-            source?: string,
-            index?: number,
-        }[] = []
+            index: number
+        }[] = [] // 初始化向量数据
+        // node中如果获取文件路径失败会报错，这里需要处理
         try {
-            // 先获取向量文件中已加载的数据列表
-            embeddingData = JSON.parse(await FsUtil.readFile(path.join('data-cache', 'knowledge-base.json')))
-        } catch (e) {
-            throw new Error('读取向量文件失败: ' + e);
+            // 获取向量文件中已加载的数据列表
+            embeddingData = JSON.parse(await FsUtil.readFile(path.join('data-cache', 'knowledge-vectors.json')))
+        } catch(e) {
+            this.logger.error('读取向量文件失败: ' + e)
         }
+        if(embeddingData.length > 0 && embeddingData.some(item => item.name === name)) {
+            return { msg: '文件名已存在', code: -1 }
+        }
+        // 将传入文件内容存入向量数据库，同时写入向量数据库
+        files.push(...await this.addDocument(name, content))
+        await FsUtil.writeFile(path.join('data-cache', 'knowledge-vectors.json'), JSON.stringify([...embeddingData, ...files], null, 2))
+        this.chunks = [...embeddingData, ...files]
+        return { msg:"文件存入成功", code: 0 }
+    }
+    async onModuleInit() {
+        // 读取目录
+        let menu = await FsUtil.readMenu('knowledge-data')
         // 循环加载目录中的文件，如果已经加载过了，则不需要加载
         for (let i = 0; i < menu.length; i++) {
-            let file = await FsUtil.readFile(path.join('knowledge-data', menu[i]))
-            if (embeddingData.findIndex(item => item.name === menu[i]) === -1) {
-                files.push(...await this.addDocument(menu[i], file))
-            }
+            this.ingestDocument(menu[i], await FsUtil.readFile(path.join('knowledge-data', menu[i])))
         }
-        // 将内容写入rag文件
-        if (files.length > 0) {
-            await FsUtil.writeFile(path.join('data-cache', 'knowledge-base.json'), JSON.stringify([...embeddingData, ...files], null, 2))
-        }
-        this.chunks = [...files, ...embeddingData]
     }
 }

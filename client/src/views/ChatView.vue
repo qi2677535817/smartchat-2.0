@@ -32,6 +32,7 @@ const llmModel = reactive({
 })
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const folderInputRef = ref<HTMLInputElement | null>(null)
 
 let abortController: AbortController | null = null
 const sendMessage = async () => {
@@ -119,7 +120,7 @@ const pickLLM = (item: { name: string; icon: string }) => {
 }
 watch(messageList, async () => {
   await nextTick()
-  if (waiting.value &&messageListRef.value) {
+  if (waiting.value && messageListRef.value) {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight
     // console.log('length watch 触发了，当前长度:', messageList.length, 'waiting:', waiting.value)
   }
@@ -161,6 +162,50 @@ const renderLastMessage = () => {
 }
 const stopGeneration = () => {
   abortController?.abort()
+}
+// 触发上传文件
+const uploadFile = () => {
+  folderInputRef.value?.click()
+}
+// 上传文件
+const onFileChange = async (e:Event) => {
+  const target = e.target as HTMLInputElement
+  const files = target.files
+  if(!files || files.length === 0) return
+  
+  // files转数组
+  const _files = Array.from(files)
+  let content: string = ''
+  let name: string = ''
+  for(let file of _files) {
+    // 读取文本内容
+    content = await file.text()
+    name = file.name
+  }
+  messageList.push({
+    content: '上传文件：' + name ,
+    role: 'user'
+  })
+  waiting.value = true
+  let res = await fetch('http://localhost:3000/knowledge-base/documents', {
+    method: 'Post',
+    headers: {
+      'Content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      content,
+      name
+    })
+  })
+  if(res.ok) {
+    let data = await res.json()
+    console.log(data);
+    messageList.push({
+      content: data.msg,
+      role: 'assistant'
+    })
+    waiting.value = false
+  }
 }
 onMounted(async () => {
   // 加载对话记录
@@ -211,6 +256,7 @@ onMounted(async () => {
       <textarea ref="textareaRef" v-model="message" rows="5" placeholder="输入消息" aria-label="输入消息"
         @keydown.enter.exact.prevent="sendMessage"></textarea>
       <div class="nav-list">
+        <button @click="uploadFile" :disabled="waiting" class="send-btn">📃</button>
         <div class="llm-box">
           <div class="llm-list" v-if="showLLM">
             <div v-for="(item, index) in llmList" :key="index" class="llm-item" @click="pickLLM(item)">
@@ -224,6 +270,8 @@ onMounted(async () => {
         <button @click="stopGeneration" v-if="waiting" class="stop-btn">停止</button>
         <button @click="sendMessage" v-else :disabled="!message.trim()">发送</button>
       </div>
+      <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" multiple style="display:none"
+      @change="onFileChange"></input>
     </div>
   </div>
 </template>
@@ -484,7 +532,10 @@ onMounted(async () => {
     display: flex;
     justify-content: flex-end;
     align-items: center;
-
+    .send-btn {
+      background: #484848;
+      margin-right: 10px;
+    }
     button {
       padding: 8px 20px;
       background-color: #007bff;
