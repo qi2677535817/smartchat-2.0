@@ -282,7 +282,7 @@ onMounted(async () => {
         <button @click="stopGeneration" v-if="waiting" class="stop-btn">停止</button>
         <button @click="sendMessage" v-else :disabled="!message.trim()">发送</button>
       </div>
-      <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" multiple style="display:none"
+      <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" style="display:none"
       @change="onFileChange"></input>
     </div>
   </div>

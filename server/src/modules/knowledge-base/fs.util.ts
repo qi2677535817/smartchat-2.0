@@ -25,4 +25,11 @@ export class FsUtil {
         let _url = this.path.join(process.cwd(), url)
         return fs.writeFile(_url, data, 'utf8')
     }
+    /**
+     * 获取文件的元数据
+     */
+    static getFileMeta(url: string) {
+        let _url = this.path.join(process.cwd(), url)
+        return fs.stat(_url)
+    }
 }

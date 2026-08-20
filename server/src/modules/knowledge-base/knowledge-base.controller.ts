@@ -1,20 +1,20 @@
 import { Post, Controller, Body, Get } from "@nestjs/common";
 import { KnowledgeBaseDto } from "./knowledge-base.dto";
 import { KnowledgeBaseService } from "./knowledge-base.service";
-import { testFunction } from "./test";
+import { RetrievalEval } from "./test";
 
 @Controller('knowledge-base')
 export class KnowledgeBaseController {
     constructor(private readonly KnowledgeBaseService: KnowledgeBaseService,
-        private readonly testFunction: testFunction
+        private readonly retrievalEval: RetrievalEval
     ) {}
 
     @Post('documents')
     async saveDocuments(@Body() body: KnowledgeBaseDto) {
-        return this.KnowledgeBaseService.ingestDocument(body.name, body.content);
+        return this.KnowledgeBaseService.ingestDocument(body.name, body.content, body.mtime);
     }
-    @Get('test')
+    @Get('eval')
     async getTest() {
-        return this.testFunction.test()
+        return this.retrievalEval.test()
     }
 }

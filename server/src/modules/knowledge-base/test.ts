@@ -2,7 +2,7 @@ import { KnowledgeBaseService } from "./knowledge-base.service"
 import { Injectable } from "@nestjs/common"
 
 @Injectable()
-export class testFunction {
+export class RetrievalEval {
     constructor( private readonly knowledgeBaseService: KnowledgeBaseService ) {
 
     }

@@ -9,3 +9,4 @@
 ✅ RAG 知识库（Embedding + 向量检索 + 持久化 + RAG入库接口 + 前端上传）
 ✅ 完成检索调优实验
 ✅ 新增jest测试，对chunkinUtil模块新增测试用例
+✅ 新增mtime 缓存指纹，自动更新向量数据库
