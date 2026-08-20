@@ -95,21 +95,12 @@ export class ChatService {
     const abortController = new AbortController();
     // 复制一份 messages，避免修改外部传入的数组
     let currentMessages: ChatMessage[] = [...(messages ?? [])];
+
     // 请求之前检查本地RGA库
-    let similarity = await this.knowledgeBaseService.compareSimilarity(currentMessages[currentMessages.length - 1].content!)
+    let topkList = await this.knowledgeBaseService.searchRag(currentMessages[currentMessages.length - 1].content!)
     // 这里设置对比阈值为0.5， topk为3
-    let topkList: any[] = []
     let ragList: any[] = []
-    if (similarity.length > 0) {
-      for (let i = 0; i < similarity.length; i++) {
-        if (similarity[i].score > 0.5) {
-          topkList.push(similarity[i])
-        }
-      }
-      topkList = topkList.sort((a, b) => b.score - a.score)
-      topkList = topkList.length > 3 ? topkList.slice(0, 3) : topkList
-      ragList = topkList.map(item => item.content)
-    }
+    ragList = topkList.map(item => item.content)
     // 判断如果引用了RAG库，则先发一段消息
     if (topkList.length > 0) {
       let sendList = topkList.map(item => {
@@ -345,6 +336,7 @@ export class ChatService {
     tools?: ChatMessageDto['tools'],
     ragList?: string[],
   ) {
+    let ragTxt = (ragList && ragList?.length > 0) ? `基于以下资料回答用户问题 【资料】： ${ragList?.join('\n【资料】：')} 如果资料中没有相关信息，请如实说明不知道`: ''
     const body = {
       model,
       messages: [
@@ -355,8 +347,7 @@ export class ChatService {
               2. 列表：使用 -  或 1.  时符号后必须有空格
               3. 段落：段落之间用空行（\n\n）分隔
               4. 代码块：用三个反引号包裹, 
-              基于以下资料回答用户问题 【资料】： ${ragList?.join('\n【资料】：')} 如果资料中没有相关信息，请如实说明不知道
-            `,
+            ` + ragTxt,
         },
         ...(messages ?? []),
       ],

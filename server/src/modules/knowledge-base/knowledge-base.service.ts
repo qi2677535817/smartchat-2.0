@@ -16,14 +16,49 @@ export class KnowledgeBaseService implements OnModuleInit {
         index?: number,
         name: string
     }[] = []
-    // 向量比对相似度
-    async compareSimilarity(query: string): Promise<{
+    private test_chunks: {
+        vector: number[],
+        text: string,
+        index?: number,
+        name: string
+    }[] = []
+    /**
+     * 检查本地RAG
+     * @param query 
+     * @returns 
+     */
+    async searchRag(query: string, isTest: boolean = false): Promise<{
         score: number,
         index: number,
         content: string,
         name: string
     }[]> {
-        if(this.chunks.length === 0) {
+        let similarity = await this.compareSimilarity(query, isTest)
+        // 这里设置对比阈值为0.5， topk为3
+        let topkList: any[] = []
+        if (similarity.length > 0) {
+            for (let i = 0; i < similarity.length; i++) {
+                if (similarity[i].score > 0.5) {
+                    topkList.push(similarity[i])
+                }
+            }
+            topkList = topkList.sort((a, b) => b.score - a.score)
+            topkList = topkList.length > 3 ? topkList.slice(0, 3) : topkList
+        }
+        return topkList
+    }
+    // 向量比对相似度
+    async compareSimilarity(query: string, isTest: boolean = false): Promise<{
+        score: number,
+        index: number,
+        content: string,
+        name: string
+    }[]> {
+        let _chunks = this.chunks
+        if(isTest) {
+            _chunks = this.test_chunks
+        }
+        if (_chunks.length === 0) {
             return []
         }
         let parameter1 = await this.embeddingService.embedText(query)
@@ -34,21 +69,21 @@ export class KnowledgeBaseService implements OnModuleInit {
             content: string,
             name: string
         }[] = []
-        for (let k = 0; k < this.chunks.length; k++) {
+        for (let k = 0; k < _chunks.length; k++) {
             let dot1 = 0
             let sumSql1 = 0
             let sumSql2 = 0
             for (let i = 0; i < parameter1.length; i++) {
-                dot1 += parameter1[i] * this.chunks[k].vector[i]
+                dot1 += parameter1[i] * _chunks[k].vector[i]
                 sumSql1 += parameter1[i] * parameter1[i]
-                sumSql2 += this.chunks[k].vector[i] * this.chunks[k].vector[i]
+                sumSql2 += _chunks[k].vector[i] * _chunks[k].vector[i]
             }
             let cosineSimilarity = dot1 / (Math.sqrt(sumSql1) * Math.sqrt(sumSql2))
             cosineSimilarityList.push({
                 score: cosineSimilarity,
-                index: this.chunks[k].index!,
-                content: this.chunks[k].text,
-                name: this.chunks[k].name
+                index: _chunks[k].index!,
+                content: _chunks[k].text,
+                name: _chunks[k].name
             })
         }
         return cosineSimilarityList
@@ -58,7 +93,7 @@ export class KnowledgeBaseService implements OnModuleInit {
      * @param document 文档内容数组
      * @returns 嵌入向量数组
      */
-    async addDocument(name: string, content: string) {
+    async addDocument(name: string, content: string, chunking: number = 200) {
         let list: {
             text: string,
             vector: number[],
@@ -68,7 +103,7 @@ export class KnowledgeBaseService implements OnModuleInit {
         let document: string[] = []
         // 先对内容进行分块
         if (content.length > 0) {
-            document = ChunkingUtil.chunking(content, 200)
+            document = ChunkingUtil.chunking(content, chunking)
         }
         if (document.length > 0) {
             // TODO: 实现文档添加逻辑
@@ -87,12 +122,12 @@ export class KnowledgeBaseService implements OnModuleInit {
     /**
      * 同名检查
      */
-    async ingestDocument(name: string, content: string) {
+    async ingestDocument(name: string, content: string, chunking: number = 200) {
         // 对比chunks中是否有相同的name
-        if(this.chunks.length > 0 && this.chunks.some(item => item.name === name)) {
+        if (this.chunks.length > 0 && this.chunks.some(item => item.name === name)) {
             return { msg: '文件名已存在' }
-        } 
-        let files:{
+        }
+        let files: {
             text,
             vector,
             name
@@ -107,24 +142,48 @@ export class KnowledgeBaseService implements OnModuleInit {
         try {
             // 获取向量文件中已加载的数据列表
             embeddingData = JSON.parse(await FsUtil.readFile(path.join('data-cache', 'knowledge-vectors.json')))
-        } catch(e) {
+        } catch (e) {
             this.logger.error('读取向量文件失败: ' + e)
         }
-        if(embeddingData.length > 0 && embeddingData.some(item => item.name === name)) {
+        if (embeddingData.length > 0 && embeddingData.some(item => item.name === name)) {
             return { msg: '文件名已存在', code: -1 }
         }
         // 将传入文件内容存入向量数据库，同时写入向量数据库
-        files.push(...await this.addDocument(name, content))
+        files.push(...await this.addDocument(name, content, chunking))
         await FsUtil.writeFile(path.join('data-cache', 'knowledge-vectors.json'), JSON.stringify([...embeddingData, ...files], null, 2))
         this.chunks = [...embeddingData, ...files]
-        return { msg:"文件存入成功", code: 0 }
+        return { msg: "文件存入成功", code: 0 }
     }
-    async onModuleInit() {
+    async initRag(chunking: number = 200) {
         // 读取目录
         let menu = await FsUtil.readMenu('knowledge-data')
         // 循环加载目录中的文件，如果已经加载过了，则不需要加载
         for (let i = 0; i < menu.length; i++) {
-            this.ingestDocument(menu[i], await FsUtil.readFile(path.join('knowledge-data', menu[i])))
+            await this.ingestDocument(menu[i], await FsUtil.readFile(path.join('knowledge-data', menu[i])), chunking)
         }
+    }
+    // 测试专用
+    async testInitRag(chunking: number = 200) {
+        this.test_chunks = []
+        // 读取目录
+        let menu = await FsUtil.readMenu('knowledge-data')
+        // 循环加载目录中的文件，如果已经加载过了，则不需要加载
+        for (let i = 0; i < menu.length; i++) {
+            let name = menu[i]
+            let content = await FsUtil.readFile(path.join('knowledge-data', menu[i]))
+            let files: {
+                text,
+                vector,
+                name
+            }[] = [] // 初始化文件
+
+            // 将传入文件内容存入向量数据库，同时写入向量数据库
+            files.push(...await this.addDocument(name, content, chunking))
+            await FsUtil.writeFile(path.join('data-cache', 'knowledge-base.json'), JSON.stringify([...this.test_chunks, ...files], null, 2))
+            this.test_chunks = [ ...this.test_chunks, ...files]
+        }
+    }
+    async onModuleInit() {
+        await this.initRag()
     }
 }
