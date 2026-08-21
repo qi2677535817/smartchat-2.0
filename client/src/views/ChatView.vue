@@ -2,7 +2,8 @@
 import { ref, reactive, watch, nextTick, onMounted, stop } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 import { loadMessages, saveMessage } from '@/utils/storage'
-
+import { userChatStore } from '@/stores/chat'
+ 
 interface Message {
   content: string
   role: 'user' | 'assistant',
@@ -16,98 +17,11 @@ interface Message {
   }]
 }
 
-const message = ref('')
-const messageList = reactive<Message[]>([])
-const waiting = ref(false)
-const showLLM = ref(false)
-const llmList =  ref([
-  {
-    name:"deepseek-v4-flash",
-    icon:"https://deepseek.ai/static/media/deepseek-v4-flash.7e0f3c1d.png"
-  },
-  {
-    name:"deepseek-v4-pro",
-    icon:"https://deepseek.ai/static/media/deepseek-v4-pro.7e0f3c1d.png"
-  }
-])
-const llmModel = reactive({
-  name: llmList.value[0]!.name,
-  icon: llmList.value[0]!.icon
-})
+const chat = userChatStore()
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const folderInputRef = ref<HTMLInputElement | null>(null)
 
-let abortController: AbortController | null = null
-const sendMessage = async () => {
-  if (message.value.trim() !== '' && !waiting.value) {
-    messageList.push({
-      content: message.value,
-      role: 'user'
-    })
-    waiting.value = true
-    const messages = messageList.map(item => ({
-      role: item.role,
-      content: item.content,
-      reasoning_content: item.reasoning_content
-    }))
-    // 定义信号
-    abortController = new AbortController()
-    // 重组消息列表，添加系统消息
-    let res = await fetch('http://localhost:3000/chat/stream', {
-      method: "POST",
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({messages, model: llmModel.name}),
-      signal: abortController.signal
-    })
-    let read = res.body?.getReader()
-    let decoder = new TextDecoder()
-    messageList.push({
-      content: '',
-      role: 'assistant',
-      showReasoning: false,
-      renderedHtml: '',
-      reasoningHtml: ''
-    })
-    let buffer = ''
-    try {
-      while (true) {
-        const { done, value } = await read!.read()
-        if (done) break
-        let chunk = decoder.decode(value)
-        buffer += chunk
-        let lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-        for (let line of lines) {
-          if (line.trim() === '') continue
-          if (!line.startsWith('data:')) continue
-          const event = JSON.parse(line.slice(5).trim())
-          if(event.type === 'reasoning') {
-            messageList[messageList.length - 1]!.reasoning_content = (messageList[messageList.length - 1]!.reasoning_content ?? '') + event.content
-          }else if(event.type === 'answer') {
-            messageList[messageList.length - 1]!.content = (messageList[messageList.length - 1]!.content ?? '') + event.content
-          }else if(event.type === 'rag') {
-            messageList[messageList.length - 1]!.citations = event.list
-          }
-        }
-      }
-    } catch (err){
-      if(err instanceof DOMException && err.name === 'AbortError') {
-        console.log('用户主动停止生成')
-        messageList[messageList.length - 1]!.content += '\n\n用户主动停止生成'
-      }else {
-        throw err
-      }
-    } finally {
-      abortController = null
-    }
-    renderLastMessage()
-    waiting.value = false
-    message.value = ''
-  }
-}
 const focusInput = () => {
   const textarea = textareaRef.value
   if (textarea) {
@@ -116,59 +30,24 @@ const focusInput = () => {
 }
 const messageListRef = ref<HTMLDivElement | null>(null)
 const pickLLM = (item: { name: string; icon: string }) => {
-  if (llmModel.name === item.name) {
-    showLLM.value = !showLLM.value
+  if (chat.llmModel.name === item.name) {
+    chat.showLLM = !chat.showLLM
     return
   }
-  llmModel.name = item.name
-  llmModel.icon = item.icon
-  showLLM.value = !showLLM.value
+  chat.llmModel.name = item.name
+  chat.llmModel.icon = item.icon
+  chat.showLLM = !chat.showLLM
 }
-watch(messageList, async () => {
+watch(chat.messageList, async () => {
   await nextTick()
-  if (waiting.value && messageListRef.value) {
+  if (chat.waiting && messageListRef.value) {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight
     // console.log('length watch 触发了，当前长度:', messageList.length, 'waiting:', waiting.value)
   }
-  saveMessage(messageList)
+  saveMessage(chat.messageList)
 })
 
-// 防抖：监听最后一条消息的变化，100ms后渲染
-const RENDER_INTERVAL = 100
-let lastRenderTime = 0
-let renderTimer: ReturnType<typeof setTimeout> | null = null 
-watch(() => {
-  // 只关心最后一条 assistant消息, 返回 content + reasoning的合并串
-  const last = messageList[messageList.length - 1]
-  if(!last || last.role !== 'assistant') return ''
-  return last.content + '|' + (last.reasoning_content ?? '')
-}, (newVal) => {
-  const now = Date.now()
-  // 情况1：已经超过 100ms 没渲染 -> 直接渲染
-  if(now - lastRenderTime >= RENDER_INTERVAL) {
-    if (renderTimer) clearTimeout(renderTimer)
-    renderLastMessage()
-    lastRenderTime = now
-    return
-  }
-  // 情況2：还没到100ms -> 设一个定时器，到时间就渲染
-  if(!renderTimer) {
-    renderTimer = setTimeout(() => {
-      renderLastMessage()
-      lastRenderTime = Date.now()
-      renderTimer = null
-    }, RENDER_INTERVAL - (now - lastRenderTime))
-  }
-})
-const renderLastMessage = () => {
-  const last = messageList[messageList.length - 1]
-  if(!last || last.role !== 'assistant') return
-  last.renderedHtml = renderMarkdown(last.content)
-  last.reasoningHtml = renderMarkdown(last.reasoning_content ?? '')
-}
-const stopGeneration = () => {
-  abortController?.abort()
-}
+
 // 触发上传文件
 const uploadFile = () => {
   folderInputRef.value?.click()
@@ -188,11 +67,11 @@ const onFileChange = async (e:Event) => {
     content = await file.text()
     name = file.name
   }
-  messageList.push({
+  chat.messageList.push({
     content: '上传文件：' + name ,
     role: 'user'
   })
-  waiting.value = true
+  chat.waiting = true
   let res = await fetch('http://localhost:3000/knowledge-base/documents', {
     method: 'Post',
     headers: {
@@ -206,11 +85,11 @@ const onFileChange = async (e:Event) => {
   if(res.ok) {
     let data = await res.json()
     console.log(data);
-    messageList.push({
+    chat.messageList.push({
       content: data.msg,
       role: 'assistant'
     })
-    waiting.value = false
+    chat.waiting = false
   }
 }
 onMounted(async () => {
@@ -223,7 +102,7 @@ onMounted(async () => {
         element.reasoningHtml = renderMarkdown(element.reasoning_content ?? '')
       }
     });
-    messageList.splice(0, messageList.length, ...list)
+    chat.messageList.splice(0, chat.messageList.length, ...list)
     await nextTick()
     if(messageListRef.value) {
       messageListRef.value.scrollTop = messageListRef.value.scrollHeight
@@ -236,20 +115,20 @@ onMounted(async () => {
   <div class="chat-container">
     <!-- 背景 -->
     <div class="message-list" ref="messageListRef">
-      <div v-for="(item, index) in messageList" :key="index" :class="['rows', item.role]">
+      <div v-for="(item, index) in chat.messageList" :key="index" :class="['rows', item.role]">
         <!-- 用户消息，纯文本 -->
         <div v-if="item.role === 'user'" class="rows-box">{{ item.content }}</div>
         <!-- 助手消息，支持 Markdown -->
         <div v-else-if="item.role === 'assistant'" class="rows-box">
-          <div v-if="waiting && index === messageList.length - 1" class="assistant waiting">
+          <div v-if="chat.waiting && index === chat.messageList.length - 1" class="assistant waiting">
             <div class="waiting-box">思考中<span></span><span></span><span></span></div>
           </div>
           <div v-if="item.reasoning_content" class="reasoning">
             <!-- 点击折叠推理过程 -->
             <div class="reasoning-title" @click="item.showReasoning = !item.showReasoning">
-            推理过程 <span class="arrow" :class="{rotated: (item.showReasoning || (waiting && index === messageList.length - 1))}">⬆️</span></div>
-            <div class="reasoning-wrap" :class="{ open: item.showReasoning || (waiting && index === messageList.length - 1) }">
-              <div v-if="item.showReasoning || (waiting && index === messageList.length - 1)" 
+            推理过程 <span class="arrow" :class="{rotated: (item.showReasoning || (chat.waiting && index === chat.messageList.length - 1))}">⬆️</span></div>
+            <div class="reasoning-wrap" :class="{ open: item.showReasoning || (chat.waiting && index === chat.messageList.length - 1) }">
+              <div v-if="item.showReasoning || (chat.waiting && index === chat.messageList.length - 1)" 
               v-html="item.reasoningHtml" class="reasoning-content"></div>
             </div>
           </div>
@@ -265,22 +144,22 @@ onMounted(async () => {
     </div>
     <!-- 输入框 -->
     <div class="message-container" @click="focusInput">
-      <textarea ref="textareaRef" v-model="message" rows="5" placeholder="输入消息" aria-label="输入消息"
-        @keydown.enter.exact.prevent="sendMessage"></textarea>
+      <textarea ref="textareaRef" v-model="chat.message" rows="5" placeholder="输入消息" aria-label="输入消息"
+        @keydown.enter.exact.prevent="chat.sendMessage"></textarea>
       <div class="nav-list">
-        <button @click="uploadFile" :disabled="waiting" class="send-btn">📃</button>
+        <button @click="uploadFile" :disabled="chat.waiting" class="send-btn">📃</button>
         <div class="llm-box">
-          <div class="llm-list" v-if="showLLM">
-            <div v-for="(item, index) in llmList" :key="index" class="llm-item" @click="pickLLM(item)">
+          <div class="llm-list" v-if="chat.showLLM">
+            <div v-for="(item, index) in chat.llmList" :key="index" class="llm-item" @click="pickLLM(item)">
               {{ item.name }}
             </div>
           </div>
-          <div class="llm-model" @click="pickLLM(llmModel)">
-            {{ llmModel.name }}
+          <div class="llm-model" @click="pickLLM(chat.llmModel)">
+            {{ chat.llmModel.name }}
           </div>
         </div>
-        <button @click="stopGeneration" v-if="waiting" class="stop-btn">停止</button>
-        <button @click="sendMessage" v-else :disabled="!message.trim()">发送</button>
+        <button @click="chat.stopGeneration" v-if="chat.waiting" class="stop-btn">停止</button>
+        <button @click="chat.sendMessage" v-else :disabled="!chat.message.trim()">发送</button>
       </div>
       <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" style="display:none"
       @change="onFileChange"></input>

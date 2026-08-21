@@ -87,16 +87,16 @@ export class KnowledgeBaseService implements OnModuleInit {
             let sumSql1 = 0
             let sumSql2 = 0
             for (let i = 0; i < parameter1.length; i++) {
-                dot1 += parameter1[i] * _chunks[k].vector[i]
+                dot1 += parameter1[i] * _chunks.chunks[k].vector[i]
                 sumSql1 += parameter1[i] * parameter1[i]
-                sumSql2 += _chunks[k].vector[i] * _chunks[k].vector[i]
+                sumSql2 += _chunks.chunks[k].vector[i] * _chunks.chunks[k].vector[i]
             }
             let cosineSimilarity = dot1 / (Math.sqrt(sumSql1) * Math.sqrt(sumSql2))
             cosineSimilarityList.push({
                 score: cosineSimilarity,
-                index: _chunks[k].index!,
-                content: _chunks[k].text,
-                name: _chunks[k].name
+                index: _chunks.chunks[k].index!,
+                content: _chunks.chunks[k].text,
+                name: _chunks.chunks[k].name
             })
         }
         return cosineSimilarityList
