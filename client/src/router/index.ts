@@ -1,11 +1,19 @@
+import ChatView from '@/views/ChatView.vue'
+import Layout from '@/views/Layout.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
 const routes: any[] = [
   {
-    name: 'chat',
-    path: '/',
-    component: () => import('../views/ChatView.vue'),
-  },
+    path:'/',
+    component: Layout,
+    children:[
+      {
+        path:'',
+        name:'chat',
+        component: ChatView
+      }
+    ]
+  }
 ]
 
 const router = createRouter({

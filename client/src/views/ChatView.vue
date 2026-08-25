@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick, onMounted, stop } from 'vue'
+import { ref, watch, nextTick, onMounted } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
-import { loadMessages, saveMessage } from '@/utils/storage'
-import { userChatStore } from '@/stores/chat'
+import { useChatStore } from '@/stores/chat'
  
 interface Message {
   content: string
@@ -17,7 +16,8 @@ interface Message {
   }]
 }
 
-const chat = userChatStore()
+
+const chat = useChatStore()
 
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const folderInputRef = ref<HTMLInputElement | null>(null)
@@ -44,9 +44,14 @@ watch(chat.messageList, async () => {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight
     // console.log('length watch 触发了，当前长度:', messageList.length, 'waiting:', waiting.value)
   }
-  saveMessage(chat.messageList)
+  // saveMessage(chat.messageList)
 })
-
+watch(() => chat.activeId, async () => {
+  await nextTick()
+  if (messageListRef.value) {
+    messageListRef.value.scrollTop = messageListRef.value.scrollHeight
+  }
+})
 
 // 触发上传文件
 const uploadFile = () => {
@@ -94,15 +99,14 @@ const onFileChange = async (e:Event) => {
 }
 onMounted(async () => {
   // 加载对话记录
-  const list = loadMessages()
-  if(list.length > 0 && list[0]) {
-    list.forEach((element: Message) => {
+
+  if(chat.messageList.length > 0 && chat.messageList[0]) {
+    chat.messageList.forEach((element: Message) => {
       if(element.role === 'assistant') {
         element.renderedHtml = renderMarkdown(element.content)
         element.reasoningHtml = renderMarkdown(element.reasoning_content ?? '')
       }
     });
-    chat.messageList.splice(0, chat.messageList.length, ...list)
     await nextTick()
     if(messageListRef.value) {
       messageListRef.value.scrollTop = messageListRef.value.scrollHeight
@@ -113,6 +117,8 @@ onMounted(async () => {
 
 <template>
   <div class="chat-container">
+    <!-- 标题 -->
+    <div class="top-title">{{ chat.title }}</div> 
     <!-- 背景 -->
     <div class="message-list" ref="messageListRef">
       <div v-for="(item, index) in chat.messageList" :key="index" :class="['rows', item.role]">
@@ -172,7 +178,7 @@ onMounted(async () => {
   * 聊天界面样式
 */
 .chat-container {
-  max-width: 1140px;
+  width: 80%;
   height: 100vh;
   max-height: 100vh;
   margin: 0 auto;
@@ -181,8 +187,24 @@ onMounted(async () => {
   flex-direction: column;
   padding: 15px;
   box-sizing: border-box;
-
-  .rows {
+  padding-top: 65px;
+  overflow: hidden;
+  position: fixed;
+  right: 0;
+  top: 0;
+  .top-title {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 80%;
+    height: 50px;
+    text-align: center;
+    line-height: 50px;
+    color: #000;
+    background: #fff;
+    border-bottom: 1px solid #e7e7e7;
+  }
+  .rows { 
     display: flex;
   }
 
