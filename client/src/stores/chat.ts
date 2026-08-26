@@ -1,6 +1,8 @@
 import { ref, reactive, watch, computed } from "vue";
 import { defineStore } from "pinia";
 import { renderMarkdown } from '@/utils/markdown'
+import { useRoute } from "vue-router";
+import router from "@/router";
 
 interface Message {
     content: string
@@ -22,10 +24,13 @@ interface Session {
 }
 
 export const useChatStore = defineStore('chat', () => {
+    const route = useRoute()
     const message = ref('')
     const sessions = ref<Session[]>([])
-    const activeId = ref('')
-    const messageList = computed((): Message[] => {
+    const activeId = computed((): string => {
+        return String(route.params.id ?? '') 
+    })
+    const messageList = computed((): Message[] => { 
         // 如果是第一次对话，这里就没有数据需要加判断
         let index = sessions.value.findIndex(item => item.id === activeId.value)
         if (index > -1) {
@@ -196,11 +201,11 @@ export const useChatStore = defineStore('chat', () => {
             }
             let index = data.sessions.findIndex((item:Session) => item.id == data.activeId)
             if(index > -1) {
-                activeId.value = data.activeId
+                router.replace('/chat/' + data.activeId)
             }
            
             if (!activeId.value) {
-                activeId.value = data.sessions[0].id
+                router.replace('/chat/' + data.sessions[0].id) 
             }
 
             sessions.value = [...data.sessions]
@@ -240,7 +245,7 @@ export const useChatStore = defineStore('chat', () => {
             messages: [],
             title: "新对话"
         }
-        activeId.value = obj.id
+        router.replace('/chat/' + obj.id)
         sessions.value.push(obj)
     }
 
@@ -248,7 +253,7 @@ export const useChatStore = defineStore('chat', () => {
      * 切换会话
      */
     const switchSession = (id: string) => {
-        activeId.value = id
+        router.replace('/chat/' + id)
     }
 
     /**
@@ -262,7 +267,7 @@ export const useChatStore = defineStore('chat', () => {
                 createSession()
             }
             if (id == activeId.value) {
-                activeId.value = sessions.value[0]!.id
+                router.replace('/chat/' + sessions.value[0]!.id)
             }
         }
     }

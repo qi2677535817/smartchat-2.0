@@ -32,4 +32,11 @@ export class FsUtil {
         let _url = this.path.join(process.cwd(), url)
         return fs.stat(_url)
     }
+    /**
+     * 删除文件
+     */
+    static unlinkFile(url: string) {
+        let _url = this.path.join(process.cwd(), url)
+        return fs.unlink(_url)
+    }
 }

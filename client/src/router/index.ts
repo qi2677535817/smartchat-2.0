@@ -1,5 +1,6 @@
 import ChatView from '@/views/ChatView.vue'
 import Layout from '@/views/Layout.vue'
+import KnowledgeView from '@/views/KnowledgeView.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
 const routes: any[] = [
@@ -9,8 +10,17 @@ const routes: any[] = [
     children:[
       {
         path:'',
+        redirect:'/chat'
+      },
+      {
+        path:'chat/:id?',
         name:'chat',
         component: ChatView
+      },
+      {
+        path:'/knowledge',
+        name:'knowledge',
+        component: KnowledgeView
       }
     ]
   }

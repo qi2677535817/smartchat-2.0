@@ -178,7 +178,7 @@ onMounted(async () => {
   * 聊天界面样式
 */
 .chat-container {
-  width: 80%;
+  // width: 80%;
   height: 100vh;
   max-height: 100vh;
   margin: 0 auto;
@@ -189,9 +189,9 @@ onMounted(async () => {
   box-sizing: border-box;
   padding-top: 65px;
   overflow: hidden;
-  position: fixed;
-  right: 0;
-  top: 0;
+  // position: fixed;
+  // right: 0;
+  // top: 0;
   .top-title {
     position: fixed;
     top: 0;

@@ -2,8 +2,7 @@ import { Injectable, OnModuleInit, Logger } from "@nestjs/common";
 import { EmbeddingService } from "../embedding/embedding.service";
 import { ChunkingUtil } from "./chunking.util";
 import { FsUtil } from "./fs.util";
-import path from "node:path";
-import { concatWith } from "rxjs";
+import path, { join } from "node:path";
 
 
 type Chunk = {
@@ -35,6 +34,61 @@ export class KnowledgeBaseService implements OnModuleInit {
             meta: {},
             chunks: []
         }
+    /**
+     * 返回向量数据库数据
+     */
+    async getRagData(): Promise<{
+        name: string,
+        mtime: number,
+        chunkCount: number
+    }[]> {
+        // 读取rag数据
+        let rag: {
+            meta: Meta,
+            chunks: Chunk[]
+        } = JSON.parse(await FsUtil.readFile(path.join('data-cache', 'knowledge-vectors.json')))
+        // 处理rag数据按照要求返回
+        let newRag = Object.entries(rag.meta).map(([key, val]) => {
+            const count = rag.chunks.reduce((total, item) => {
+                return item.name == key ? total + 1 : total
+            }, 0)
+            return {
+                name: key,
+                mtime: val,
+                chunkCount: count
+            }
+        })
+        return newRag
+    }
+    /**
+     * 删除向量数据库
+     */
+    async deleteRagData(name: string) {
+        // 首先先判断传入的文件名称在源数据中是否存在
+        try {
+            let ragData = JSON.parse(await FsUtil.readFile(join('data-cache', 'knowledge-vectors.json')))
+            if (ragData.meta[name]) {
+                // 元数据中有记录文件名称则同时删除源文件和数据库中的相关数据W
+                // 先过滤掉元数据中相关数据
+                ragData.chunks = ragData.chunks.filter(item => item.name !== name)
+                delete ragData.meta[name]
+                await FsUtil.writeFile(join('data-cache', 'knowledge-vectors.json'), JSON.stringify(ragData, null, 2))
+                this.chunks = ragData
+                try {
+                    await FsUtil.unlinkFile(join('knowledge-data', name))
+                    return { code: 0, msg: "删除成功" }
+                } catch (e) {
+                    if (e instanceof Error && (e as NodeJS.ErrnoException).code === 'ENOENT') {
+                        return { code: 0, msg: '删除成功' }
+                    }
+                    return { code: -1, msg: '删除失败' }
+                }
+
+            }
+        } catch (e) {
+            return { code: -1, msg: "删除失败" }
+        }
+    }
     /**
      * 检查本地RAG
      * @param query 
@@ -146,16 +200,23 @@ export class KnowledgeBaseService implements OnModuleInit {
         } catch (e) {
             this.logger.error('读取向量文件失败: ' + e)
         }
+        // 这里判断文件是新增还是更新
+        let isNew = false
+        if(!embeddingData.meta[name]) isNew = true // 表示为新增
         // 将整理后的向量数据写入文件
         files.push(...await this.addDocument(name, content, chunking))
         //  ----------------------- 写入 ---------------------------------------
         embeddingData.meta[name] = mtime
         // 其实这里也要检查，如果是更新内容的话就直接替换对应内容
-        if(embeddingData.chunks.some(e => e.name == name)) {
+        if (embeddingData.chunks.some(e => e.name == name)) {
             embeddingData.chunks = embeddingData.chunks.filter(item => item.name !== name)
         }
         embeddingData.chunks = [...embeddingData.chunks, ...files]
         await FsUtil.writeFile(path.join('data-cache', 'knowledge-vectors.json'), JSON.stringify(embeddingData, null, 2))
+        // 需要判断下是否为传入新增文件
+        if(isNew) {
+            await FsUtil.writeFile(path.join('knowledge-data', name), content)
+        }
         this.chunks = embeddingData
         return { msg: "文件存入成功", code: 0 }
     }
@@ -216,6 +277,6 @@ export class KnowledgeBaseService implements OnModuleInit {
         }
     }
     async onModuleInit() {
-       this.initRag()
+        this.initRag()
     }
 }

@@ -13,3 +13,9 @@ export class KnowledgeBaseDto {
   @IsNumber()
   mtime: number = 0
 }
+
+export class DocumentsDto {
+  @IsString()
+  @IsNotEmpty()
+  name: string = ''
+}

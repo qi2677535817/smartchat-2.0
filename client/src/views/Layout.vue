@@ -15,3 +15,9 @@ onMounted(() => {
         <div class="main-area"><router-view /></div>
     </div>
 </template>
+<style lang="scss">
+.app-layout {
+    display: grid;
+    grid-template-columns: 20% 1fr;
+}
+</style>
