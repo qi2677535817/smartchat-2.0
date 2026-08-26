@@ -3,6 +3,9 @@ import { EmbeddingService } from "../embedding/embedding.service";
 import { ChunkingUtil } from "./chunking.util";
 import { FsUtil } from "./fs.util";
 import path, { join } from "node:path";
+import { RerankService } from "../embedding/rerank.service";
+import { text } from "node:stream/consumers";
+import { ConfigService } from "@nestjs/config";
 
 
 type Chunk = {
@@ -16,7 +19,14 @@ type Meta = Record<string, number>
 
 @Injectable()
 export class KnowledgeBaseService implements OnModuleInit {
-    constructor(private readonly embeddingService: EmbeddingService) {
+    private readonly RERANK_ENABLED; // 控制开关
+
+    constructor(private readonly embeddingService: EmbeddingService,
+        private readonly rerankService: RerankService,
+        private readonly configService: ConfigService
+    ) {
+        this.RERANK_ENABLED = this.configService.get('RERANK_ENABLED') === 'true'
+        this.logger.log('RERANK_ENABLED = ' + this.RERANK_ENABLED)
     }
     private readonly logger = new Logger(KnowledgeBaseService.name)
 
@@ -100,10 +110,12 @@ export class KnowledgeBaseService implements OnModuleInit {
         content: string,
         name: string
     }[]> {
+        // 粗召编排数据
         let similarity = await this.compareSimilarity(query, isTest)
-        // 这里设置对比阈值为0.5， topk为3
+        // 1.0: 这里设置对比阈值为0.5， topk为3, 
+        // 2.0: 精排后的数据不需要再取阈值了，这里暂定去topk 为 3
         let topkList: any[] = []
-        if (similarity.length > 0) {
+        if (!this.RERANK_ENABLED) {
             for (let i = 0; i < similarity.length; i++) {
                 if (similarity[i].score > 0.5) {
                     topkList.push(similarity[i])
@@ -111,7 +123,18 @@ export class KnowledgeBaseService implements OnModuleInit {
             }
             topkList = topkList.sort((a, b) => b.score - a.score)
             topkList = topkList.length > 3 ? topkList.slice(0, 3) : topkList
+        } else {
+            // 重新整理候选集数据，按照排序模型请求的指定格式
+            similarity = similarity.sort((a, b) => b.score - a.score)
+            similarity = similarity.slice(0, 15)
+            let newLis = similarity.map(item => item.content)
+            this.logger.log(`召回候选: ${newLis.length} 个, ${similarity.slice(0, 15).map(s => s.name).join(',')}`)
+
+            // 这里对召回向量的候选集进行交叉编码精排
+            const rerankRes = await this.rerankService.getRerankList(query, newLis)
+            topkList = rerankRes.slice(0, 3).map(r => similarity[r.index])   // 用下标找回完整候选
         }
+
         return topkList
     }
     // 向量比对相似度
@@ -202,7 +225,7 @@ export class KnowledgeBaseService implements OnModuleInit {
         }
         // 这里判断文件是新增还是更新
         let isNew = false
-        if(!embeddingData.meta[name]) isNew = true // 表示为新增
+        if (!embeddingData.meta[name]) isNew = true // 表示为新增
         // 将整理后的向量数据写入文件
         files.push(...await this.addDocument(name, content, chunking))
         //  ----------------------- 写入 ---------------------------------------
@@ -214,7 +237,7 @@ export class KnowledgeBaseService implements OnModuleInit {
         embeddingData.chunks = [...embeddingData.chunks, ...files]
         await FsUtil.writeFile(path.join('data-cache', 'knowledge-vectors.json'), JSON.stringify(embeddingData, null, 2))
         // 需要判断下是否为传入新增文件
-        if(isNew) {
+        if (isNew) {
             await FsUtil.writeFile(path.join('knowledge-data', name), content)
         }
         this.chunks = embeddingData
