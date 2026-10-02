@@ -53,7 +53,8 @@ export class TenderService {
     }
 
     // 受理上传：落盘 data-cache/tender/<id>/ 并写入 tender_document
-    async acceptUpload(filename: string, pdf: Buffer, items: Buffer): Promise<TenderDocument> {
+    // 返回 itemsPath 供后续管线调用（产物路径由 id 规则化推导，不入库）
+    async acceptUpload(filename: string, pdf: Buffer, items: Buffer): Promise<{ doc: TenderDocument; itemsPath: string }> {
         const id = randomUUID();
         const dir = path.join(TENDER_DIR, id);
         await fs.promises.mkdir(dir, { recursive: true });
@@ -69,6 +70,11 @@ export class TenderService {
         doc.pageCount = null;
         doc.pageOffset = null;
         doc.createdAt = Date.now();
-        return this.tenderDocRepo.save(doc);
+        return { doc: await this.tenderDocRepo.save(doc), itemsPath };
+    }
+
+    // 按 id 查询上传记录（下载端点用）
+    findDocument(id: string): Promise<TenderDocument | null> {
+        return this.tenderDocRepo.findOne({ where: { id } });
     }
 }
