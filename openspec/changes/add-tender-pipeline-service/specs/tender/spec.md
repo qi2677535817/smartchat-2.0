@@ -12,7 +12,7 @@
 #### Scenario: 上传合法 PDF 与条目 JSON
 
 - **WHEN** 客户端上传 `.pdf` 文件与可解析为非空数组的 items JSON，且管线在时限内以退出码 0 结束
-- **THEN** 产物写入 `server/data-cache/tender/<id>/review.html`，响应 200 且包含 `id` 与 `downloadUrl`
+- **THEN** 产物写入 `server/data-cache/tender/<id>/review.html`，响应 2xx 且包含 `id` 与 `downloadUrl`
 - **AND** `tender_document` 表新增一条记录，含 `filename` 与 PDF 落盘路径
 - **AND** 从发起请求到收到响应的耗时 ≤ 3 分钟（以 100 页以内文字版 PDF 计）
 
@@ -24,7 +24,7 @@
 
 #### Scenario: items JSON 非法
 
-- **WHEN** `items` 字段内容无法被 JSON 解析，或解析结果不是非空数组
+- **WHEN** `items` 字段内容无法被 JSON 解析，或解析结果不是形如 `{"items": [非空数组]}` 的对象（管线要求 `data["items"]`，另允许可选 `project` 字段）
 - **THEN** 返回 400，错误信息指明 items 格式问题
 - **AND** 不调用 Python 管线
 
