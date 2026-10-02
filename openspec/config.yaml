@@ -1,0 +1,139 @@
+# OpenSpec 项目配置 —— smartchat-2.0 · 标书复核 Agent 二开
+#
+# 作用：
+#   context  → 注入到「所有」工件的生成提示词里（项目背景、技术栈、红线约束）
+#   rules    → 只注入到「对应」工件（proposal / specs / design / tasks）
+#   operations → apply / archive 阶段的执行指引（咨询性质，不约束工件内容）
+#
+# 事实来源：docs/PRD-标书复核Agent.md（产品定义）、docs/tender-agent-design.md v1.2（技术细节）
+# 二者与 AI 的判断冲突时，一律以文档为准，并停下来向人确认。
+
+schema: spec-driven
+
+# ============================================================================
+# 项目上下文 —— 注入所有工件，是本项目"约束力"的核心
+# ============================================================================
+context: |
+  ## 项目是什么
+  在既有的 smartchat-2.0（企业内部知识问答系统）上做二开，新增"标书复核"业务链路：
+  上传招标文件 PDF → 自动提取全部应交材料与资质 → 生成左右对照复核界面（左原文/右清单/可定位高亮）
+  → 检索企业知识库填充"我方是否具备" → 导出成表。
+  唯一硬指标是「准确」：不能少、不能多、不能错。漏一份材料 = 废标，这是真金白银的业务风险。
+
+  ## 二开的本质（最重要的判断，决定了全部工作性质）
+  这不是从零开发，而是**集成工程**：把一条已在离线状态验证过的 Python 文档管线，
+  接进一个已有服务化能力（NestJS + Vue3）的平台。工作量和风险都因此可控。
+
+  ## 已有资产 —— 必须复用，严禁重写
+  【平台层 · smartchat-2.0】
+  - FC 引擎（流式工具调用循环、tool_calls 按 index 累积、多轮执行）
+    位置：server/src/modules/chat/chat.service.ts —— 这就是 Agent 引擎，提取需求项走它
+  - 工具注册机制：server/src/modules/chat/tools/index.ts（tools 数组 + toolHandlers 映射）
+  - SSE 流式：POST /chat/stream（@Sse + RxJS）
+  - RAG 检索：KnowledgeBaseService.searchRag(query, isTest) —— 填充"我方是否具备"必须用它
+  - 知识库：分级 chunking + mtime 增量 + 余弦检索（JSON 向量库）
+  - 会话持久化：session 模块（TypeORM + better-sqlite3）
+  - 前端流式接收 / 思维链折叠 / DOMPurify：client/src/stores/chat.ts、client/src/views/ChatView.vue
+
+  【文档管线层 · tender-material-checklist skill】
+  位置：~/.workbuddy/skills/tender-material-checklist/
+  - SKILL.md：三条铁律（不能少/不能多/不能错）+ 五阶段流程 + 六区域定位表
+  - references/extraction-guide.md：强制性用词判定表 + 15 项高频易漏点清单
+  - references/review-tool-spec.md：8 项锁定决策 + 3 大核心机制 + 9 条已踩技术坑
+  - scripts/build_review_html.py（878 行）：词级坐标定位 + 字符级容错匹配 + 页码投票校准
+    + 覆盖度校验 + 单文件 HTML 打包（内嵌 PDF 与 pdf.js）
+  - scripts/verify_rects.py：高亮框几何验证（裁图提字反查原文，PASS 率要求 100%）
+  - scripts/scan_keywords.py：七组关键词全文扫描定位
+  - scripts/test_frontend_logic.js：最小 DOM 桩前端逻辑离线自检
+  - assets/vendor/：pdf.js（Mozilla，Apache-2.0）
+
+  ## 技术栈（锁定，不得擅自变更或引入新框架）
+  后端：NestJS 11 + TypeScript 5.7 + TypeORM + better-sqlite3 + @nestjs/config
+        + class-validator/class-transformer + RxJS（SSE）
+  前端：Vue 3.5 + TypeScript 6.0 + Vite 8 + Pinia 4 + vue-router 5 + marked + DOMPurify
+  文档解析：Python 3.13 + pdfplumber（skill 资产，走子进程调用）
+  PDF 渲染：pdf.js（skill 内嵌资产）
+  存储：SQLite（关系数据）+ JSON 文件（向量库，一期可接受暴力检索）
+  大模型：DeepSeek（对话与 Function Calling）+ embedding / rerank 双通道外部 API
+  测试：Jest（后端）+ skill 自带的 Python / Node 自检脚本
+
+  ## 架构红线（违反其一即为跑偏，必须停下来问人）
+  1. 禁止把 pdfplumber 管线用 Node 重写 —— 会销毁已验证的容错匹配、页码校准、几何验证能力
+  2. 禁止让大模型输出页码 —— 模型数不准页；页码与坐标必须由本地字符串匹配计算
+  3. 禁止在前端做运行时模糊搜索定位 —— 高亮坐标必须由后端预计算，运行时搜索会跳错位置
+  4. 禁止新写检索逻辑 —— RAG 填充必须复用 KnowledgeBaseService.searchRag()
+  5. 禁止新写 Agent 引擎 —— 提取必须复用 chat 模块既有的 FC 循环
+  6. 禁止修改 skill 里的 Python 脚本逻辑 —— 只允许新增命令行参数做接口适配
+  7. 导出内容必须来自机器验证过的逐字引用 —— AI 概括只可用于标题与导航，不得作为清单正文
+
+  ## 明确不做（一期边界）
+  用户体系/登录/权限、扫描件 OCR、Word/图片多格式、向量库专业方案升级、
+  替换 FC 引擎或引入 LangChain、云部署与容器化、移动端与响应式、完美 UI 样式。
+
+  ## 代码规范
+  - 后端严格沿用现有 NestJS 模块结构：module / controller / service / dto 分离
+  - 新模块放 server/src/modules/<name>/，在 app.module.ts 注册
+  - 工具类文件放 server/src/modules/chat/tools/ 下按 <name>.tool.ts 命名，
+    同时导出「定义」与「handler」，并在 tools/index.ts 注册
+  - 全部注释用中文；提交信息用中文
+  - 不引入新依赖除非确有必要，引入前说明理由
+
+  ## 验收要求（每个 change 都必须满足）
+  - 量化标准优先，禁止用"应该没问题"作为验收结论
+  - 涉及定位/坐标的改动，必须跑 verify_rects.py 且 PASS 率 100%、SKIP 为 0
+  - 涉及前端脚本的改动，必须跑 test_frontend_logic.js 且退出码为 0
+  - 涉及编译的改动，必须 nest build / vue-tsc 通过
+  - 报告结果时如实呈现，不得把 SKIP 计入 PASS、不得把"未验证"表述为"通过"
+
+# ============================================================================
+# 各工件专属规则
+# ============================================================================
+rules:
+  proposal:
+    - 必须写明本次变更对应 PRD 中的哪个功能编号（F1-F6）或哪个差距项（G1-G4）
+    - 必须明确列出"复用了哪些既有资产"，以及"为什么不能重写"
+    - 必须写明回滚方案（一步一 commit，验收失败即 git checkout 回退）
+    - 若变更触碰架构红线，必须在提案中显式说明并请求人工确认
+
+  specs:
+    - 需求描述用「系统 SHALL ...」句式，场景用 Given/When/Then
+    - 每条需求必须有可验证的验收标准，能量化的必须量化
+      （例：几何验证 PASS 率 100%；提取条目数与人工核对偏差为 0）
+    - 涉及 PDF 定位、坐标、页码的需求，必须在场景中写明"坐标由后端预计算"
+    - 禁止出现无法验证的模糊表述（如"效果良好""基本可用"）
+
+  design:
+    - 必须说明与既有模块的接口关系（调用哪个 service / 复用哪个函数签名）
+    - 涉及 Python 调用的，必须写明进程调用方式、参数传递、错误与超时处理
+    - 涉及数据表的，必须给出表结构（字段名、类型、索引）与其在 TypeORM 中的写法
+    - 必须包含降级方案（扫描件、环境缺 Python、大文件超时等）
+
+  tasks:
+    - 任务必须可独立验收，粒度控制在"单次可完成并验证"
+    - 每个任务后附验收命令或验收动作（例：跑 verify_rects.py 看 PASS 率）
+    - 严格按 PRD 第 6 节的阶段顺序，不得跨阶段提前实现
+    - 每个任务对应一次 git commit，commit 信息用中文
+
+# ============================================================================
+# 操作指引（apply / archive 阶段的执行建议）
+# ============================================================================
+operations:
+  apply:
+    guidance:
+      - 开工前先读 docs/PRD-标书复核Agent.md 与 docs/tender-agent-design.md，确认边界
+      - 一个任务一次 commit，做完立刻验收；验收不过立即回滚，禁止在坏状态上继续叠加
+      - 触碰架构红线时立即停止并询问，不要自行发挥
+      - 改动 Python 管线时只加参数不改逻辑，改完必须重跑几何验证确认未破坏原有能力
+      - 涉及坐标定位的改动，验收命令固定为 verify_rects.py，标准为 PASS 率 100% 且 SKIP 为 0
+      - 保持上下文干净，跨阶段时清空上下文再开始
+  archive:
+    guidance:
+      - 归档前确认该阶段的验收项全部达标，且验收证据（命令输出/报告）已保存
+      - 归档摘要要写清楚：复用了什么、新增了什么、还遗留什么
+      - 若本阶段临时引入了新的技术债，必须在摘要中显式记录，不得隐瞒
+
+# ============================================================================
+# 集成选项
+# ============================================================================
+githubCopilot:
+  cloudAgent: false
