@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { ChatMessageDto, ChatMessage } from './chat.dto';
 import { tools, toolHandlers } from './tools'
 import { KnowledgeBaseService } from '../knowledge-base/knowledge-base.service'
+import { SessionAttachmentService } from '../session/session-attachment.service'
 
 @Injectable()
 export class ChatService {
@@ -12,7 +13,8 @@ export class ChatService {
   private readonly DEEPSEEK_API_KEY: string;
 
   constructor(private readonly configService: ConfigService,
-    private readonly knowledgeBaseService: KnowledgeBaseService
+    private readonly knowledgeBaseService: KnowledgeBaseService,
+    private readonly sessionAttachmentService: SessionAttachmentService,
   ) {
     this.DEEPSEEK_BASE_URL =
       this.configService.get('DEEPSEEK_BASE_URL') ??
@@ -30,9 +32,10 @@ export class ChatService {
   streamChat(
     messages: ChatMessageDto['messages'],
     model: ChatMessageDto['model'],
+    sessionId?: string,
   ): Observable<MessageEvent> {
     return new Observable((observer) => {
-      this.runChatLoop(messages, model, observer);
+      this.runChatLoop(messages, model, sessionId, observer);
     });
   }
   /**
@@ -89,6 +92,7 @@ export class ChatService {
   private async runChatLoop(
     messages: ChatMessage[],
     model: ChatMessageDto['model'],
+    sessionId: string | undefined,
     observer: any,
   ) {
     // 用于中断对大模型的流式请求
@@ -96,8 +100,16 @@ export class ChatService {
     // 复制一份 messages，避免修改外部传入的数组
     let currentMessages: ChatMessage[] = [...(messages ?? [])];
 
-    // 请求之前检查本地RGA库
-    let topkList = await this.knowledgeBaseService.searchRag(currentMessages[currentMessages.length - 1].content!)
+    // 请求之前检查本地RGA库：全局库 + 本会话附件（严格隔离）
+    let extraChunks: { text: string; vector: number[]; name: string }[] = []
+    if (sessionId) {
+      extraChunks = await this.sessionAttachmentService.listChunksBySession(sessionId)
+    }
+    let topkList = await this.knowledgeBaseService.searchRag(
+      currentMessages[currentMessages.length - 1].content!,
+      false,
+      extraChunks,
+    )
     // 这里设置对比阈值为0.5， topk为3
     let ragList: any[] = []
     ragList = topkList.map(item => item.content)

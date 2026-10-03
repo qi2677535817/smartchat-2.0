@@ -41,6 +41,11 @@ export class ChatMessageDto {
   @IsNotEmpty()
   model: string = 'deepseek-v4-flash';
 
+  // 会话 id：用于检索该会话的附件（可选，兼容历史请求）
+  @IsOptional()
+  @IsString()
+  sessionId?: string;
+
   @IsOptional()
   @IsArray()
   tools: Array<{

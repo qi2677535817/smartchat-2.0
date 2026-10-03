@@ -14,6 +14,6 @@ export class ChatController {
   @Post('stream')
   @Sse()
   streamChat(@Body() body: ChatMessageDto) {
-    return this.chatService.streamChat(body.messages, body.model);
+    return this.chatService.streamChat(body.messages, body.model, body.sessionId);
   }
 }
