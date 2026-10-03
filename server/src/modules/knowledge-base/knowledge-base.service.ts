@@ -1,10 +1,9 @@
-import { Injectable, OnModuleInit, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, OnModuleInit, Logger } from "@nestjs/common";
 import { EmbeddingService } from "../embedding/embedding.service";
 import { ChunkingUtil } from "./chunking.util";
 import { FsUtil } from "./fs.util";
 import path, { join } from "node:path";
 import { RerankService } from "../embedding/rerank.service";
-import { text } from "node:stream/consumers";
 import { ConfigService } from "@nestjs/config";
 
 
@@ -104,14 +103,14 @@ export class KnowledgeBaseService implements OnModuleInit {
      * @param query 
      * @returns 
      */
-    async searchRag(query: string, isTest: boolean = false): Promise<{
+    async searchRag(query: string, isTest: boolean = false, extraChunks: Chunk[] = []): Promise<{
         score: number,
         index: number,
         content: string,
         name: string
     }[]> {
-        // 粗召编排数据
-        let similarity = await this.compareSimilarity(query, isTest)
+        // 粗召编排数据（extraChunks 为会话附件等额外候选，与全局库一起检索）
+        let similarity = await this.compareSimilarity(query, isTest, extraChunks)
         // 1.0: 这里设置对比阈值为0.5， topk为3, 
         // 2.0: 精排后的数据不需要再取阈值了，这里暂定去topk 为 3
         let topkList: any[] = []
@@ -130,6 +129,11 @@ export class KnowledgeBaseService implements OnModuleInit {
             let newLis = similarity.map(item => item.content)
             this.logger.log(`召回候选: ${newLis.length} 个, ${similarity.slice(0, 15).map(s => s.name).join(',')}`)
 
+            // 候选集为空时直接返回，避免空列表请求精排接口被 400 拒绝后抛错导致进程崩溃
+            if (newLis.length === 0) {
+                return []
+            }
+
             // 这里对召回向量的候选集进行交叉编码精排
             const rerankRes = await this.rerankService.getRerankList(query, newLis)
             topkList = rerankRes.slice(0, 3).map(r => similarity[r.index])   // 用下标找回完整候选
@@ -137,8 +141,8 @@ export class KnowledgeBaseService implements OnModuleInit {
 
         return topkList
     }
-    // 向量比对相似度
-    async compareSimilarity(query: string, isTest: boolean = false): Promise<{
+    // 向量比对相似度（全局 chunks + extraChunks 合并检索）
+    async compareSimilarity(query: string, isTest: boolean = false, extraChunks: Chunk[] = []): Promise<{
         score: number,
         index: number,
         content: string,
@@ -148,7 +152,8 @@ export class KnowledgeBaseService implements OnModuleInit {
         if (isTest) {
             _chunks = this.test_chunks
         }
-        if (_chunks.chunks.length === 0) {
+        const allChunks: Chunk[] = [..._chunks.chunks, ...extraChunks]
+        if (allChunks.length === 0) {
             return []
         }
         let parameter1 = await this.embeddingService.embedText(query)
@@ -159,21 +164,21 @@ export class KnowledgeBaseService implements OnModuleInit {
             content: string,
             name: string
         }[] = []
-        for (let k = 0; k < _chunks.chunks.length; k++) {
+        for (let k = 0; k < allChunks.length; k++) {
             let dot1 = 0
             let sumSql1 = 0
             let sumSql2 = 0
             for (let i = 0; i < parameter1.length; i++) {
-                dot1 += parameter1[i] * _chunks.chunks[k].vector[i]
+                dot1 += parameter1[i] * allChunks[k].vector[i]
                 sumSql1 += parameter1[i] * parameter1[i]
-                sumSql2 += _chunks.chunks[k].vector[i] * _chunks.chunks[k].vector[i]
+                sumSql2 += allChunks[k].vector[i] * allChunks[k].vector[i]
             }
             let cosineSimilarity = dot1 / (Math.sqrt(sumSql1) * Math.sqrt(sumSql2))
             cosineSimilarityList.push({
                 score: cosineSimilarity,
-                index: _chunks.chunks[k].index!,
-                content: _chunks.chunks[k].text,
-                name: _chunks.chunks[k].name
+                index: allChunks[k].index ?? k,
+                content: allChunks[k].text,
+                name: allChunks[k].name
             })
         }
         return cosineSimilarityList
@@ -205,9 +210,38 @@ export class KnowledgeBaseService implements OnModuleInit {
         return list
     }
     /**
+     * 入库前校验：仅接受文本内容，防止二进制/乱码（如 PDF 被误读）导致海量无效分块与向量库膨胀
+     */
+    private assertTextContent(name: string, content: string, chunking: number) {
+        // 单文档体积上限（约 2MB 文本）
+        const MAX_BYTES = 2 * 1024 * 1024
+        if (Buffer.byteLength(content, 'utf8') > MAX_BYTES) {
+            throw new BadRequestException(`文档过大（超过 ${MAX_BYTES / 1024 / 1024}MB），请拆分后上传`)
+        }
+        // 乱码检测：替换字符 U+FFFD 或异常控制字符占比过高即判定为二进制内容
+        let suspicious = 0
+        for (const ch of content) {
+            const code = ch.codePointAt(0)!
+            if (code === 0xfffd || (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d)) {
+                suspicious++
+            }
+        }
+        const ratio = content.length > 0 ? suspicious / content.length : 0
+        if (ratio > 0.02) {
+            throw new BadRequestException('检测到二进制或乱码内容：知识库仅支持文本文件（.txt/.md），PDF 请先转成文本')
+        }
+        // 分块数量上限：防止超长文档触发海量 embedding 请求
+        const chunkCount = Math.ceil(content.length / chunking)
+        if (chunkCount > 1000) {
+            throw new BadRequestException(`文档分块过多（${chunkCount} 块），请精简后上传`)
+        }
+    }
+
+    /**
      * 同名检查 + 修改时间检查
      */
     async ingestDocument(name: string, content: string, mtime: number, chunking: number = 200) {
+        this.assertTextContent(name, content, chunking)
         let files: Chunk[] = [] // 初始化文件
         let embeddingData: {
             meta: Meta,
@@ -271,10 +305,8 @@ export class KnowledgeBaseService implements OnModuleInit {
                     // 如果不一致，说明文件内有改动，更新向量数据库
                     await this.ingestDocument(fileName, content, meta.mtimeMs, chunking)
                 } else {
-                    // 如果修改时间一致，再检查同名
-                    if (ragData.chunks.some(item => item.name == fileName)) {
-                        await this.ingestDocument(fileName, content, meta.mtimeMs, chunking)
-                    }
+                    // mtime 一致且向量库已有该文件 -> 内容未变更，跳过避免重复入库
+                    this.logger.log(`跳过未变更文件: ${fileName}`)
                 }
             }
         }
