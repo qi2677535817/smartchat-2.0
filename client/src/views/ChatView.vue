@@ -57,48 +57,102 @@ watch(() => chat.activeId, async () => {
 // 是否处于空状态（用于展示引导卡）
 const isEmpty = computed(() => chat.messageList.length === 0)
 
+// ---------------- 附件（待发送，不立即上传） ----------------
+interface PendingFile {
+    id: string
+    name: string
+    size: number
+    file: File
+}
+const pendingFiles = ref<PendingFile[]>([])
+const uploading = ref(false)
+
+const formatSize = (size: number) => {
+    if (size < 1024) return `${size} B`
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+    return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
 // 触发上传文件
 const uploadFile = () => {
   folderInputRef.value?.click()
 }
-// 上传文件
-const onFileChange = async (e:Event) => {
+// 选择文件：仅加入待发送列表，不上传
+const onFileChange = (e: Event) => {
   const target = e.target as HTMLInputElement
   const files = target.files
-  if(!files || files.length === 0) return
-
-  // files转数组
-  const _files = Array.from(files)
-  let content: string = ''
-  let name: string = ''
-  for(let file of _files) {
-    // 读取文本内容
-    content = await file.text()
-    name = file.name
-  }
-  chat.messageList.push({
-    content: '上传文件：' + name ,
-    role: 'user'
-  })
-  chat.waiting = true
-  let res = await fetch(`${API_BASE}/knowledge-base/documents`, {
-    method: 'Post',
-    headers: {
-      'Content-type': 'application/json'
-    },
-    body: JSON.stringify({
-      content,
-      name
+  if (!files || files.length === 0) return
+  for (const file of Array.from(files)) {
+    pendingFiles.value.push({
+      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      size: file.size,
+      file,
     })
-  })
-  if(res.ok) {
-    let data = await res.json()
-    console.log(data);
+  }
+  // 重置以便再次选择同一文件也能触发 change
+  target.value = ''
+  focusInput()
+}
+// 移除待发送附件
+const removePendingFile = (id: string) => {
+  pendingFiles.value = pendingFiles.value.filter(f => f.id !== id)
+}
+
+// 逐个上传待发送附件；失败抛出异常由调用方处理（保留标签供重试）
+const uploadPendingFiles = async (files: PendingFile[]) => {
+  for (const pf of files) {
+    const content = await pf.file.text()
+    const res = await fetch(`${API_BASE}/knowledge-base/documents`, {
+      method: 'POST',
+      headers: {
+        'Content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        content,
+        name: pf.name
+      })
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`${pf.name} 上传失败（${res.status}）${text ? '：' + text.slice(0, 120) : ''}`)
+    }
+  }
+}
+
+// 发送：先上传附件，再发送消息
+const handleSend = async () => {
+  if (chat.waiting || uploading.value) return
+  const hasText = !!chat.message.trim()
+  const files = pendingFiles.value.slice()
+  if (!hasText && files.length === 0) return
+
+  // 1) 上传附件
+  if (files.length) {
+    uploading.value = true
+    try {
+      await uploadPendingFiles(files)
+      pendingFiles.value = pendingFiles.value.filter(f => !files.some(x => x.id === f.id))
+      chat.messageList.push({
+        content: `已上传文档：${files.map(f => f.name).join('、')}`,
+        role: 'user'
+      })
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err))
+      return
+    } finally {
+      uploading.value = false
+    }
+  }
+
+  // 2) 发送消息（无正文时仅提示已入库）
+  if (chat.message.trim()) {
+    chat.sendMessage()
+  } else {
     chat.messageList.push({
-      content: data.msg,
+      content: '文档已入库，可以继续提问。',
       role: 'assistant'
     })
-    chat.waiting = false
   }
 }
 onMounted(async () => {
@@ -202,11 +256,25 @@ onMounted(async () => {
     <!-- 输入区 -->
     <div class="composer-wrap">
       <div class="message-container" @click="focusInput">
+        <!-- 待发送附件 -->
+        <div v-if="pendingFiles.length" class="attachments" @click.stop>
+          <div v-for="pf in pendingFiles" :key="pf.id" class="attachment">
+            <span class="attachment__icon"><AppIcon name="file" :size="15" /></span>
+            <span class="attachment__meta">
+              <span class="attachment__name" :title="pf.name">{{ pf.name }}</span>
+              <span class="attachment__size">{{ formatSize(pf.size) }}</span>
+            </span>
+            <button class="attachment__del" title="移除附件" aria-label="移除附件" :disabled="uploading || chat.waiting"
+              @click="removePendingFile(pf.id)">
+              <AppIcon name="close" :size="13" />
+            </button>
+          </div>
+        </div>
         <textarea ref="textareaRef" v-model="chat.message" rows="3" placeholder="输入你的问题，Enter 发送，Shift+Enter 换行"
-          aria-label="输入消息" @keydown.enter.exact.prevent="chat.sendMessage"></textarea>
+          aria-label="输入消息" @keydown.enter.exact.prevent="handleSend"></textarea>
         <div class="nav-list">
-          <button class="btn btn-ghost-tool" title="上传文档到知识库" aria-label="上传文档到知识库" @click="uploadFile"
-            :disabled="chat.waiting">
+          <button class="btn btn-ghost-tool" title="添加附件" aria-label="添加附件" @click="uploadFile"
+            :disabled="chat.waiting || uploading">
             <AppIcon name="paperclip" :size="16" />
           </button>
           <div class="llm-box">
@@ -225,14 +293,16 @@ onMounted(async () => {
             <AppIcon name="stop" :size="14" />
             <span>停止</span>
           </button>
-          <button v-else class="btn btn-primary" @click="chat.sendMessage" :disabled="!chat.message.trim()">
+          <button v-else class="btn btn-primary" @click="handleSend"
+            :disabled="uploading || (!chat.message.trim() && !pendingFiles.length)">
             <AppIcon name="send" :size="15" />
-            <span>发送</span>
+            <span>{{ uploading ? '上传中…' : '发送' }}</span>
           </button>
         </div>
       </div>
-      <p class="composer-hint">AI 生成内容可能存在偏差，重要结论请核对引用原文</p>
-      <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" style="display:none" @change="onFileChange"></input>
+      <p class="composer-hint">附件将在点击发送时上传入库 · AI 生成内容可能存在偏差，重要结论请核对引用原文</p>
+      <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" multiple style="display:none"
+        @change="onFileChange"></input>
     </div>
   </div>
 </template>
@@ -641,6 +711,84 @@ onMounted(async () => {
     &:focus-within {
         border-color: var(--brand-500);
         box-shadow: var(--shadow-md), 0 0 0 3px var(--brand-50);
+    }
+
+    /* ---------- 待发送附件标签 ---------- */
+    .attachments {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+        margin-bottom: var(--sp-2);
+        padding-bottom: var(--sp-2);
+        border-bottom: 1px solid var(--ink-100);
+    }
+
+    .attachment {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--sp-2);
+        max-width: 260px;
+        padding: 6px 8px 6px 6px;
+        background: var(--brand-50);
+        border: 1px solid var(--brand-100);
+        border-radius: var(--r-sm);
+        transition: background .16s ease, border-color .16s ease;
+    }
+
+    .attachment__icon {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        flex: none;
+        color: var(--brand-600);
+        background: var(--white);
+        border-radius: var(--r-xs);
+    }
+
+    .attachment__meta {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        line-height: 1.3;
+    }
+
+    .attachment__name {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--ink-800);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .attachment__size {
+        font-size: 11px;
+        color: var(--ink-500);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .attachment__del {
+        display: grid;
+        place-items: center;
+        padding: 4px;
+        flex: none;
+        color: var(--ink-400);
+        background: transparent;
+        border: none;
+        border-radius: var(--r-xs);
+        cursor: pointer;
+        transition: color .16s ease, background .16s ease;
+
+        &:hover:not(:disabled) {
+            color: var(--danger);
+            background: var(--white);
+        }
+
+        &:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+        }
     }
 
     textarea {
