@@ -9,6 +9,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Message } from './modules/session/message.entity';
 import { Session } from './modules/session/session.entity';
 import { SessionModule } from './modules/session/session.module';
+import { SessionAttachment } from './modules/session/session-attachment.entity';
 import { TenderModule } from './modules/tender/tender.module';
 import { TenderDocument } from './modules/tender/tender-document.entity';
 
@@ -18,7 +19,7 @@ import { TenderDocument } from './modules/tender/tender-document.entity';
     TypeOrmModule.forRoot({
       type:"better-sqlite3",
       database:'data-cache/smartchat.db',
-      entities: [Session, Message, TenderDocument],
+      entities: [Session, Message, SessionAttachment, TenderDocument],
       synchronize: true
     })
   ],
