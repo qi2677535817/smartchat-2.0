@@ -17,6 +17,9 @@ interface Message {
 
 const chat = useChatStore()
 
+// 后端 API 基址：开发环境走 vite 同源代理（见 .env.development），避免跨域与浏览器安全策略拦截
+const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
+
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const folderInputRef = ref<HTMLInputElement | null>(null)
 
@@ -78,7 +81,7 @@ const onFileChange = async (e:Event) => {
     role: 'user'
   })
   chat.waiting = true
-  let res = await fetch('http://localhost:3000/knowledge-base/documents', {
+  let res = await fetch(`${API_BASE}/knowledge-base/documents`, {
     method: 'Post',
     headers: {
       'Content-type': 'application/json'

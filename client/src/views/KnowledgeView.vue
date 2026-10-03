@@ -12,15 +12,18 @@ const ragList = ref<RagData[]>([])
 const chat = useChatStore()
 const folderInputRef = ref<HTMLInputElement | null>(null)
 
+// 后端 API 基址：开发环境走 vite 同源代理（见 .env.development），避免跨域与浏览器安全策略拦截
+const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
+
 const getRagList = () => {
-    return fetch('http://localhost:3000/knowledge-base/documents', {
+    return fetch(`${API_BASE}/knowledge-base/documents`, {
         method: 'Get'
     })
 }
 const deleteRag = (name: string) => {
     let ok = window.confirm('你确定要删除本条数据')
     if (ok) {
-        fetch('http://localhost:3000/knowledge-base/documents/' + name, {
+        fetch(`${API_BASE}/knowledge-base/documents/${encodeURIComponent(name)}`, {
             method: 'Delete'
         }).then(async res => {
             if (res.ok) {
@@ -59,7 +62,7 @@ const onFileChange = async (e: Event) => {
         name = file.name
     }
     chat.waiting = true
-    let res = await fetch('http://localhost:3000/knowledge-base/documents', {
+    let res = await fetch(`${API_BASE}/knowledge-base/documents`, {
         method: 'Post',
         headers: {
             'Content-type': 'application/json'
