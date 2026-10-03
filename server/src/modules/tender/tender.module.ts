@@ -9,6 +9,8 @@ import { PythonPipelineService } from "./python-pipeline.service";
 @Module({
     imports: [TypeOrmModule.forFeature([TenderDocument])],
     providers: [TenderService, PythonPipelineService],
-    controllers: [TenderController]
+    controllers: [TenderController],
+    // 导出 PythonPipelineService：供 session 模块做 PDF 附件文本提取
+    exports: [PythonPipelineService],
 })
 export class TenderModule {}

@@ -28,19 +28,23 @@ export class PythonPipelineService {
             ?? path.join(os.homedir(), ".workbuddy", "skills", "tender-material-checklist");
     }
 
-    // 前置校验：Python 环境探测（结果缓存）+ 脚本与 vendor 资源在位
-    async precheck(): Promise<void> {
-        if (this.pythonOk !== true) {
-            try {
-                await this.runOnce("python", ["--version"], 10_000);
-                this.pythonOk = true;
-            } catch {
-                this.pythonOk = false;
-                throw new ServiceUnavailableException(
-                    "未检测到 Python 环境：请安装 Python 3.11+ 并执行 pip install pdfplumber",
-                );
-            }
+    // Python 环境探测（结果缓存）；失败抛 503
+    private async ensurePython(): Promise<void> {
+        if (this.pythonOk === true) return
+        try {
+            await this.runOnce("python", ["--version"], 10_000);
+            this.pythonOk = true;
+        } catch {
+            this.pythonOk = false;
+            throw new ServiceUnavailableException(
+                "未检测到 Python 环境：请安装 Python 3.11+ 并执行 pip install pdfplumber",
+            );
         }
+    }
+
+    // 前置校验：Python 环境 + 管线脚本与 vendor 资源在位
+    async precheck(): Promise<void> {
+        await this.ensurePython();
         const script = path.join(this.skillDir, "scripts", "build_review_html.py");
         const vendor = path.join(this.skillDir, "assets", "vendor");
         if (!fs.existsSync(script)) {
@@ -49,6 +53,35 @@ export class PythonPipelineService {
         if (!fs.existsSync(vendor)) {
             throw new ServiceUnavailableException(`pdf.js 渲染资源缺失：${vendor}`);
         }
+    }
+
+    // 提取 PDF 纯文本（供对话附件入库），返回 UTF-8 文本
+    async extractText(pdfPath: string, outPath: string): Promise<string> {
+        await this.ensurePython();
+        const script = path.join(this.skillDir, "scripts", "extract_text.py");
+        if (!fs.existsSync(script)) {
+            throw new ServiceUnavailableException(`PDF 提取脚本缺失：${script}`);
+        }
+        const args = [script, "--pdf", pdfPath, "--out", outPath];
+        this.logger.log("spawn: python " + args.join(" "));
+        const started = Date.now();
+        const result = await this.runOnce("python", args, PIPELINE_TIMEOUT_MS, true);
+        this.logger.log(`提取退出码 ${result.code}，耗时 ${Date.now() - started}ms`);
+
+        if (result.timedOut) {
+            throw new GatewayTimeoutException(`PDF 文本提取超过 ${PIPELINE_TIMEOUT_MS / 1000} 秒已终止`);
+        }
+        if (result.stderrTail) {
+            this.logger.warn("提取 stderr（尾部）：\n" + result.stderrTail);
+        }
+        if (result.code !== 0) {
+            throw new BadGatewayException(`PDF 文本提取失败（退出码 ${result.code}）：${result.stderrTail.slice(-1200)}`);
+        }
+        const stat = await fs.promises.stat(outPath).catch(() => null);
+        if (!stat || stat.size === 0) {
+            throw new BadGatewayException("PDF 文本提取结果为空");
+        }
+        return fs.promises.readFile(outPath, "utf-8");
     }
 
     // 调用既有 Python 管线生成复核 HTML（五个参数均为脚本既有参数，零新增，红线 6）
