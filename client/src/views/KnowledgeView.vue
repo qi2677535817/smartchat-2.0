@@ -57,6 +57,11 @@ const onFileChange = async (e: Event) => {
     let content: string = ''
     let name: string = ''
     for (let file of _files) {
+        // 知识库仅支持文本文件，PDF 属二进制，file.text() 会读出乱码导致后端海量无效分块
+        if (/\.pdf$/i.test(file.name)) {
+            window.alert('知识库暂不支持 PDF 直接上传，请先转为 .txt / .md 文本，或使用「标书复核」功能解析 PDF')
+            return
+        }
         // 读取文本内容
         content = await file.text()
         name = file.name
@@ -151,7 +156,7 @@ onMounted(async () => {
             </div>
         </div>
 
-        <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" style="display:none"
+        <input type="file" ref="folderInputRef" accept=".txt,.md" style="display:none"
             @change="onFileChange"></input>
     </div>
 </template>

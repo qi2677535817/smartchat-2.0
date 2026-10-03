@@ -83,6 +83,11 @@ const onFileChange = (e: Event) => {
   const files = target.files
   if (!files || files.length === 0) return
   for (const file of Array.from(files)) {
+    // 知识库仅支持文本文件，PDF 属二进制，file.text() 会读出乱码导致后端海量无效分块
+    if (/\.pdf$/i.test(file.name)) {
+      window.alert('知识库暂不支持 PDF 直接上传，请先转为 .txt / .md 文本，或使用「标书复核」功能解析 PDF')
+      continue
+    }
     pendingFiles.value.push({
       id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
       name: file.name,
@@ -301,7 +306,7 @@ onMounted(async () => {
         </div>
       </div>
       <p class="composer-hint">附件将在点击发送时上传入库 · AI 生成内容可能存在偏差，重要结论请核对引用原文</p>
-      <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" multiple style="display:none"
+      <input type="file" ref="folderInputRef" accept=".txt,.md" multiple style="display:none"
         @change="onFileChange"></input>
     </div>
   </div>
