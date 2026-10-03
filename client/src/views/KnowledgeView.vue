@@ -1,6 +1,8 @@
 <script lang="ts" setup>
 import { useChatStore } from '@/stores/chat';
-import { onMounted, reactive, ref } from 'vue';
+import { onMounted, ref } from 'vue';
+import AppIcon from '@/components/AppIcon.vue';
+
 interface RagData {
     name: string,
     mtime: number,
@@ -77,6 +79,8 @@ const onFileChange = async (e: Event) => {
         }
     }
 }
+// 统计总块数
+const totalChunks = () => ragList.value.reduce((sum, r) => sum + (r.chunkCount || 0), 0)
 onMounted(async () => {
     let res = await getRagList()
     if (res.ok) {
@@ -84,61 +88,174 @@ onMounted(async () => {
     }
 })
 </script>
+
 <template>
-    <div class="knowLedge-box">
-        <div class="nav-menu">
-            <div class="add-btn" @click="uploadFile" :disabled="chat.waiting">{{ chat.waiting ? '上传中' : '添加+' }}</div>
+    <div class="knowledge">
+        <!-- 页头 -->
+        <div class="page-head">
+            <div class="page-head__title">
+                <h1>RAG 知识库</h1>
+                <p>共 {{ ragList.length }} 份文档 · {{ totalChunks() }} 个知识分块，问答时会据此检索引用</p>
+            </div>
+            <button class="btn btn-primary" @click="uploadFile" :disabled="chat.waiting">
+                <AppIcon name="plus" :size="16" />
+                <span>{{ chat.waiting ? '上传中…' : '添加文档' }}</span>
+            </button>
         </div>
-        <table class="knowledge-table">
-            <thead>
-                <tr>
-                    <th>名称</th>
-                    <th>修改时间</th>
-                    <th>分块数量</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr v-for="row in ragList" :key="row.name">
-                    <td>{{ row.name }}</td>
-                    <td>{{ new Date(row.mtime).toLocaleString() }}</td>
-                    <td>{{ row.chunkCount }}</td>
-                    <td @click="deleteRag(row.name)" class="delete">删除</td>
-                </tr>
-            </tbody>
-        </table>
+
+        <!-- 内容区 -->
+        <div class="knowledge__body">
+            <div v-if="ragList.length" class="card knowledge__card">
+                <table class="knowledge-table">
+                    <thead>
+                        <tr>
+                            <th class="col-name">名称</th>
+                            <th class="col-time">修改时间</th>
+                            <th class="col-chunk">分块数量</th>
+                            <th class="col-act">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="row in ragList" :key="row.name">
+                            <td>
+                                <span class="doc-cell">
+                                    <span class="doc-cell__icon"><AppIcon name="file" :size="15" /></span>
+                                    <span class="doc-cell__name" :title="row.name">{{ row.name }}</span>
+                                </span>
+                            </td>
+                            <td class="num">{{ new Date(row.mtime).toLocaleString() }}</td>
+                            <td class="num"><span class="badge">{{ row.chunkCount }}</span></td>
+                            <td class="col-act">
+                                <button class="btn btn-danger btn-sm" @click="deleteRag(row.name)">
+                                    <AppIcon name="trash" :size="13" />
+                                    <span>删除</span>
+                                </button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 空状态 -->
+            <div v-else class="empty-state knowledge__empty">
+                <span class="empty-state__icon"><AppIcon name="database" :size="24" /></span>
+                <div class="empty-state__title">知识库还是空的</div>
+                <p class="empty-state__desc">上传 .txt / .md / .pdf 文档后，系统会按分块向量化，问答时自动检索并标注引用来源。</p>
+                <button class="btn btn-primary" @click="uploadFile" :disabled="chat.waiting">
+                    <AppIcon name="paperclip" :size="15" />
+                    <span>上传第一份文档</span>
+                </button>
+            </div>
+        </div>
+
         <input type="file" ref="folderInputRef" accept=".txt,.md,.pdf" style="display:none"
             @change="onFileChange"></input>
     </div>
 </template>
-<style lang="scss">
-.nav-menu {
-    display: flex;
-    align-items: center;
-    padding: 10px;
+
+<style lang="scss" scoped>
+.knowledge {
+    height: 100vh;
+    overflow-y: auto;
+    padding-bottom: var(--sp-8);
+
+    .knowledge__body {
+        max-width: var(--content-max);
+        margin: 0 auto;
+        padding: 0 var(--sp-8);
+    }
+
+    .knowledge__card {
+        overflow: hidden;
+    }
+
+    .knowledge__empty {
+        max-width: 560px;
+        margin: var(--sp-10) auto;
+    }
 }
 
 .knowledge-table {
     width: 100%;
     border-collapse: collapse;
+    font-size: 14px;
+
+    th {
+        padding: 12px 16px;
+        font-size: 12.5px;
+        font-weight: 600;
+        text-align: left;
+        color: var(--ink-500);
+        background: var(--ink-50);
+        border-bottom: 1px solid var(--ink-200);
+    }
+
+    td {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--ink-100);
+        vertical-align: middle;
+    }
+
+    tbody tr {
+        transition: background .14s ease;
+
+        &:hover {
+            background: var(--ink-50);
+        }
+
+        &:last-child td {
+            border-bottom: none;
+        }
+    }
+
+    .col-time {
+        width: 220px;
+    }
+
+    .col-chunk {
+        width: 120px;
+    }
+
+    .col-act {
+        width: 110px;
+        text-align: right;
+    }
+
+    .num {
+        font-variant-numeric: tabular-nums;
+        color: var(--ink-600);
+    }
 }
 
-.knowledge-table th,
-.knowledge-table td {
-    border: 1px solid #e5e7eb;
-    padding: 8px 12px;
-    text-align: center;
+.doc-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    max-width: 100%;
 }
 
-.delete {
-    cursor: pointer;
+.doc-cell__icon {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    flex: none;
+    color: var(--brand-600);
+    background: var(--brand-50);
+    border: 1px solid var(--brand-100);
+    border-radius: var(--r-sm);
 }
 
-.add-btn {
-    background: #2e91ed;
-    color: #fff;
-    padding: 5px 15px;
-    border-radius: 5px;
-    cursor: pointer;
+.doc-cell__name {
+    font-weight: 500;
+    color: var(--ink-800);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.btn-sm {
+    padding: 5px 10px;
+    font-size: 13px;
 }
 </style>

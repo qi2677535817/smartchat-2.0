@@ -9,15 +9,26 @@ onMounted(() => {
     chat.initSessions()
 })
 </script>
+
 <template>
     <div class="app-layout">
-        <SessionList></SessionList>
-        <div class="main-area"><router-view /></div>
+        <SessionList />
+        <main class="main-area"><router-view /></main>
     </div>
 </template>
+
 <style lang="scss">
 .app-layout {
-    display: grid;
-    grid-template-columns: 20% 1fr;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.main-area {
+    flex: 1;
+    min-width: 0;
+    height: 100vh;
+    overflow: hidden;
+    background: var(--ink-50);
 }
 </style>
