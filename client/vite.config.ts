@@ -25,6 +25,20 @@ export default defineConfig({
         target: 'http://localhost:3000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
+        configure: (proxy) => {
+          // 后端未启动或端口不通时，返回结构化提示，避免只看到无信息的 proxy error
+          proxy.on('error', (err, _req, res) => {
+            const serverRes = res as unknown as import('node:http').ServerResponse
+            if (typeof serverRes.writeHead !== 'function' || serverRes.headersSent) return
+            serverRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
+            serverRes.end(
+              JSON.stringify({
+                code: 502,
+                msg: '后端服务不可用（localhost:3000），请先在 server 目录执行 npm run start',
+              }),
+            )
+          })
+        },
       },
     },
   },
