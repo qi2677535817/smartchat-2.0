@@ -14,6 +14,20 @@ const route = useRoute()
 const toRag = () => router.push('/knowledge')
 // 当前路由高亮：知识库页激活该导航项
 const isRagActive = () => route.path.startsWith('/knowledge')
+
+// 会话操作后跳回对话页：store 只切换数据，需配合路由跳转，
+// 否则在知识库页点击会话/新建对话时数据变了但页面仍停留在原路由
+const goChat = () => {
+    if (!route.path.startsWith('/chat')) router.push('/chat')
+}
+const newChat = async () => {
+    await chat.createSession()
+    goChat()
+}
+const openSession = async (id: string) => {
+    await chat.switchSession(id)
+    goChat()
+}
 </script>
 
 <template>
@@ -28,7 +42,7 @@ const isRagActive = () => route.path.startsWith('/knowledge')
         </div>
 
         <!-- 主操作 -->
-        <button class="new-chat" @click="chat.createSession">
+        <button class="new-chat" @click="newChat">
             <AppIcon name="plus" :size="16" />
             <span>新建对话</span>
         </button>
@@ -51,7 +65,7 @@ const isRagActive = () => route.path.startsWith('/knowledge')
         <div class="session-list">
             <div v-for="item in chat.sessions" :key="item.id"
                 :class="['session-item', chat.activeId === item.id ? 'session-item--active' : '']"
-                @click="chat.switchSession(item.id)">
+                @click="openSession(item.id)">
                 <AppIcon name="chat" :size="15" class="session-item__icon" />
                 <span class="session-item__title">{{ item.title || '新对话' }}</span>
                 <button class="session-item__del" title="删除对话" aria-label="删除对话"
