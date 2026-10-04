@@ -33,14 +33,17 @@ export class TenderExtractionService {
      * @param pdfPath    PDF 路径
      * @param workDir    工作目录（pages.json 落盘位置）
      * @param model      模型名
-     * @param onProgress 每块完成回调（块序号从 1 起）
+     * @param callbacks  onStart（分页分块完成）、onProgress（每块完成）
      */
     async extract(
         pdfPath: string,
         workDir: string,
         model: string,
-        onProgress: (blockIndex: number, blockTotal: number, itemCount: number) => void,
-    ): Promise<RequirementItem[]> {
+        callbacks: {
+            onStart?: (pageCount: number, blockTotal: number) => void
+            onProgress?: (blockIndex: number, blockTotal: number, itemCount: number) => void
+        } = {},
+    ): Promise<{ items: RequirementItem[]; failedBlocks: number }> {
         const pagesPath = path.join(workDir, "pages.json")
         const { pageCount, pages } = await this.pipeline.extractPages(pdfPath, pagesPath)
         if (!pages || pages.length === 0) {
@@ -49,8 +52,10 @@ export class TenderExtractionService {
 
         const blocks = this.buildBlocks(pages, PAGES_PER_BLOCK, OVERLAP_PAGES)
         this.logger.log(`提取开始：${pageCount} 页 → ${blocks.length} 块`)
+        callbacks.onStart?.(pageCount, blocks.length)
 
         const all: RequirementItem[] = []
+        let failedBlocks = 0
         for (let i = 0; i < blocks.length; i++) {
             const text = blocks[i].map(p => p.text).join("\n")
             try {
@@ -59,14 +64,15 @@ export class TenderExtractionService {
                 this.logger.log(`第 ${i + 1}/${blocks.length} 块：${items.length} 条`)
             } catch (e) {
                 // 单块失败不中断整体（design 降级方案）
+                failedBlocks++
                 this.logger.error(`第 ${i + 1}/${blocks.length} 块提取失败：${e instanceof Error ? e.message : String(e)}`)
             }
-            onProgress(i + 1, blocks.length, all.length)
+            callbacks.onProgress?.(i + 1, blocks.length, all.length)
         }
 
         const deduped = this.dedupe(all)
-        this.logger.log(`去重：${all.length} → ${deduped.length} 条`)
-        return deduped
+        this.logger.log(`去重：${all.length} → ${deduped.length} 条，失败块 ${failedBlocks}`)
+        return { items: deduped, failedBlocks }
     }
 
     // 分块：每 size 页一块，块间重叠 overlap 页（避免边界句子被切断）
@@ -82,11 +88,13 @@ export class TenderExtractionService {
         return blocks
     }
 
-    // 单块提取：复用 chat 模块的 FC 循环，强制通过 submit_requirements 提交
+    // 单块提取：复用 chat 模块的 FC 循环，通过 submit_requirements 提交
+    // 注意：思考模式（reasoning 模型）不支持 tool_choice='required'，只能使用 'auto'，
+    // 因此在 system prompt 中硬性要求"必须调用工具"，并在未调用时记录告警。
     private async extractBlock(text: string, model: string): Promise<RequirementItem[]> {
         const collected: RequirementItem[] = []
         const handler = createSubmitRequirementsHandler(items => collected.push(...items))
-        await this.chatService.runToolLoop(
+        const message = await this.chatService.runToolLoop(
             [
                 { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
                 { role: 'user', content: text },
@@ -94,8 +102,14 @@ export class TenderExtractionService {
             model,
             [submitRequirementsTool] as never,
             { submit_requirements: handler },
-            'required',
+            'auto',
         )
+        if (collected.length === 0) {
+            // 模型未调用工具（可能直接以文本作答），记录以便排查提示词效果
+            this.logger.warn(
+                `本块未通过工具提交条目；模型回复片段：${typeof message?.content === 'string' ? message.content.slice(0, 200) : '(空)'}`,
+            )
+        }
         return collected
     }
 

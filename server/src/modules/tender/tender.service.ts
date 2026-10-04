@@ -73,6 +73,24 @@ export class TenderService {
         return { doc: await this.tenderDocRepo.save(doc), itemsPath };
     }
 
+    // 受理上传（仅 PDF）：落盘并建记录，返回 PDF 路径（阶段 2 自动提取流程用）
+    async acceptPdf(filename: string, pdf: Buffer): Promise<{ doc: TenderDocument; pdfPath: string }> {
+        const id = randomUUID();
+        const dir = path.join(TENDER_DIR, id);
+        await fs.promises.mkdir(dir, { recursive: true });
+        const pdfPath = path.join(dir, "source.pdf");
+        await fs.promises.writeFile(pdfPath, pdf);
+
+        const doc = new TenderDocument();
+        doc.id = id;
+        doc.filename = filename;
+        doc.path = pdfPath;
+        doc.pageCount = null;
+        doc.pageOffset = null;
+        doc.createdAt = Date.now();
+        return { doc: await this.tenderDocRepo.save(doc), pdfPath };
+    }
+
     // 按 id 查询上传记录（下载端点用）
     findDocument(id: string): Promise<TenderDocument | null> {
         return this.tenderDocRepo.findOne({ where: { id } });
