@@ -4,13 +4,16 @@ import { Repository } from "typeorm";
 import { SessionAttachment } from "./session-attachment.entity";
 import { PythonPipelineService } from "../tender/python-pipeline.service";
 import { EmbeddingService } from "../embedding/embedding.service";
-import { ChunkingUtil } from "../knowledge-base/chunking.util";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const CHUNK_SIZE = 200
-const MAX_CHUNKS = 500
+// 附件分块尺寸：PDF 提取文本行很碎，需用较大块避免块数爆炸
+const ATTACHMENT_CHUNK_SIZE = 800
+// 分块上限：支持上百页文档（100 页 PDF 约 65 块）
+const MAX_CHUNKS = 3000
+// embedding 并发数：控制并发避免触发接口限流
+const EMBED_CONCURRENCY = 5
 const MIN_TEXT_LEN = 10
 
 // 会话附件 chunk 结构（与 knowledge-base 的 Chunk 对齐 text/vector，name 用于引用来源标注）
@@ -50,16 +53,13 @@ export class SessionAttachmentService {
             throw new BadRequestException("文件内容为空或过短（PDF 可能是扫描件），请提供文字版内容");
         }
 
-        const pieces = ChunkingUtil.chunking(text, CHUNK_SIZE);
+        const pieces = this.chunkAttachmentText(text, ATTACHMENT_CHUNK_SIZE);
         if (pieces.length > MAX_CHUNKS) {
             throw new BadRequestException(`附件过大（${pieces.length} 个分块，超过 ${MAX_CHUNKS}），请拆分后上传`);
         }
 
-        const chunks: { text: string; vector: number[] }[] = [];
-        for (const piece of pieces) {
-            const vector = await this.embedding.embedText(piece);
-            chunks.push({ text: piece, vector });
-        }
+        const vectors = await this.embedWithConcurrency(pieces, EMBED_CONCURRENCY);
+        const chunks = pieces.map((piece, i) => ({ text: piece, vector: vectors[i] }));
 
         const attachment = new SessionAttachment();
         attachment.sessionId = sessionId;
@@ -69,6 +69,48 @@ export class SessionAttachmentService {
         attachment.createdAt = Date.now();
         const saved = await this.attachmentRepo.save(attachment);
         return { id: saved.id, filename: saved.filename, chunkCount: chunks.length };
+    }
+
+    /**
+     * 附件文本分块：先合并被 PDF 换行切碎的句子，再按标点边界切块。
+     * 不能直接用 ChunkingUtil：它按行分块，而 PDF 提取文本每行只有几十字，
+     * 会把 79 页文档切成 2000+ 块（实测 2055 块），导致 embedding 海量请求。
+     */
+    private chunkAttachmentText(text: string, size: number): string[] {
+        // 单换行合并为空格（同一句被换行切断），双换行保留为段落分隔
+        const normalized = text
+            .replace(/\r\n/g, '\n')
+            .replace(/([^\n])\n(?!\n)/g, '$1 ')
+            .replace(/[ \t]{2,}/g, ' ')
+        const chunks: string[] = []
+        let buf = ''
+        for (const ch of normalized) {
+            buf += ch
+            // 达到尺寸且在标点/换行处断开，尽量保持语义完整
+            if (buf.length >= size && /[。！？；\n.!?;]/.test(ch)) {
+                chunks.push(buf.trim())
+                buf = ''
+            }
+        }
+        if (buf.trim()) chunks.push(buf.trim())
+        return chunks
+    }
+
+    /**
+     * 并发 embedding：控制并发数避免触发接口限流，结果按原顺序返回
+     */
+    private async embedWithConcurrency(pieces: string[], concurrency: number): Promise<number[][]> {
+        const results: number[][] = new Array(pieces.length)
+        let cursor = 0
+        const worker = async () => {
+            while (cursor < pieces.length) {
+                const i = cursor++
+                results[i] = await this.embedding.embedText(pieces[i])
+            }
+        }
+        const workerCount = Math.max(1, Math.min(concurrency, pieces.length))
+        await Promise.all(Array.from({ length: workerCount }, () => worker()))
+        return results
     }
 
     // 附件列表（不含向量）
