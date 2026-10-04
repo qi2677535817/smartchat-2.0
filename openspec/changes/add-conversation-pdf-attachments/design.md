@@ -43,18 +43,19 @@
 ## 附件入库流程
 
 ```
-POST /sessions/:id/attachments (multipart file=PDF)
-  → 校验 PDF 扩展名/MIME（否则 400）
-  → spawn python extract_text.py --pdf --out → 纯文本
+POST /sessions/:id/attachments (multipart file=PDF/TXT/MD)
+  → 校验扩展名（否则 400）
+  → PDF: spawn python extract_text.py --pdf --out → 纯文本；TXT/MD: 直接读文本
   → 空文本/过短 → 400「扫描件或无可提取文本」
-  → ChunkingUtil.chunking(text, 200) → string[]
-  → 逐块 EmbeddingService.embedText() → number[][]
+  → 附件专用分块（合并 PDF 碎行 + 800 字/块，按标点边界断开）→ string[]
+  → 并发 EmbeddingService.embedText()（并发 5）→ number[][]
   → 组装 chunks JSON 存入 session_attachment
-  → 返回 { id, filename, chunkCount, size }
+  → 返回 { id, filename, chunkCount }
 ```
 
-- 逐块 embedding 无并发控制（一期单实例，附件通常 1 份、分块可控）；若单文件分块超 500 块则拒绝（沿用知识库防失控经验）。
-- embedding 失败 → 500，不写入半成品记录。
+- **附件专用分块**（不用 `ChunkingUtil`）：`ChunkingUtil.chunking` 按行分块，而 PDF 提取文本每行只有几十字，会把 79 页文档切成 2055 块；附件改为「先合并被换行切碎的句子，再按标点边界切 800 字/块」，同一文档降到 63 块。
+- **并发 embedding**（并发 5）：控制并发避免接口限流，块级结果按原顺序回填。
+- 分块上限 3000（支持上百页文档）；embedding 失败 → 500，不写入半成品记录。
 
 ## 检索扩展（红线 4 合规）
 
@@ -91,6 +92,6 @@ async searchRag(query: string, isTest = false, extraChunks: Chunk[] = []) {
 |---|---|
 | 扫描件 / 无文本层 PDF | 提取文本为空或过短 → 400 提示「请提供文字版 PDF」 |
 | 环境缺 Python | 复用既有 503 探测与提示 |
-| 附件分块超 500 | 400「附件过大，请拆分」 |
+| 附件分块超 3000 | 400「附件过大，请拆分」 |
 | embedding 接口异常 | 500，记录日志，不写半成品 |
 | 会话被删除 | 前端删除会话时同步 DELETE 附件（一期显式级联，不依赖外键） |
