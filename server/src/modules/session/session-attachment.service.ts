@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { SessionAttachment } from "./session-attachment.entity";
-import { PythonPipelineService } from "../tender/python-pipeline.service";
+import { PythonPipelineService } from "../pdf-pipeline/python-pipeline.service";
 import { EmbeddingService } from "../embedding/embedding.service";
 import * as fs from "node:fs";
 import * as os from "node:os";

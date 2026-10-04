@@ -7,14 +7,14 @@ import { SessionController } from "./session.controller";
 import { SessionService } from "./session.service";
 import { SessionAttachmentController } from "./session-attachment.controller";
 import { SessionAttachmentService } from "./session-attachment.service";
-import { TenderModule } from "../tender/tender.module";
+import { PdfPipelineModule } from "../pdf-pipeline/pdf-pipeline.module";
 import { EmbeddingModule } from "../embedding/embedding.module";
 
 @Module({
     imports: [
         TypeOrmModule.forFeature([Session, Message, SessionAttachment]),
-        // 复用 PDF 提取（TenderModule exports PythonPipelineService）与向量化能力
-        TenderModule,
+        // 复用 PDF 提取（PdfPipelineModule）与向量化能力
+        PdfPipelineModule,
         EmbeddingModule,
     ],
     providers: [SessionService, SessionAttachmentService],

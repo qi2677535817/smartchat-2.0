@@ -4,7 +4,7 @@ import type { Response } from "express";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { TENDER_DIR, TenderService } from "./tender.service";
-import { PythonPipelineService } from "./python-pipeline.service";
+import { PythonPipelineService } from "../pdf-pipeline/python-pipeline.service";
 
 // multer 上传文件的最小类型描述（项目 tsconfig 的 types 数组限制了 @types/multer 全局声明，故就地声明）
 interface MulterFile {
