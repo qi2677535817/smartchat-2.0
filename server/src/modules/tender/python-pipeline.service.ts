@@ -57,12 +57,26 @@ export class PythonPipelineService {
 
     // 提取 PDF 纯文本（供对话附件入库），返回 UTF-8 文本
     async extractText(pdfPath: string, outPath: string): Promise<string> {
+        await this.runExtractScript(pdfPath, outPath, false);
+        return fs.promises.readFile(outPath, "utf-8");
+    }
+
+    // 提取 PDF 分页文本（标书分块提取用）
+    async extractPages(pdfPath: string, outPath: string): Promise<{ pageCount: number; pages: { pno: number; text: string }[] }> {
+        await this.runExtractScript(pdfPath, outPath, true);
+        const raw = await fs.promises.readFile(outPath, "utf-8");
+        return JSON.parse(raw);
+    }
+
+    // 调用 extract_text.py；json=true 时输出分页 JSON 结构，否则输出纯文本
+    private async runExtractScript(pdfPath: string, outPath: string, json: boolean): Promise<void> {
         await this.ensurePython();
         const script = path.join(this.skillDir, "scripts", "extract_text.py");
         if (!fs.existsSync(script)) {
             throw new ServiceUnavailableException(`PDF 提取脚本缺失：${script}`);
         }
         const args = [script, "--pdf", pdfPath, "--out", outPath];
+        if (json) args.push("--json");
         this.logger.log("spawn: python " + args.join(" "));
         const started = Date.now();
         const result = await this.runOnce("python", args, PIPELINE_TIMEOUT_MS, true);
@@ -81,7 +95,6 @@ export class PythonPipelineService {
         if (!stat || stat.size === 0) {
             throw new BadGatewayException("PDF 文本提取结果为空");
         }
-        return fs.promises.readFile(outPath, "utf-8");
     }
 
     // 调用既有 Python 管线生成复核 HTML（五个参数均为脚本既有参数，零新增，红线 6）
