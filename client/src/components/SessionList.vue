@@ -12,8 +12,10 @@ const router = useRouter()
 const route = useRoute()
 
 const toRag = () => router.push('/knowledge')
+const toTender = () => router.push('/tender')
 // 当前路由高亮：知识库页激活该导航项
 const isRagActive = () => route.path.startsWith('/knowledge')
+const isTenderActive = () => route.path.startsWith('/tender')
 
 // 会话操作后跳回对话页：store 只切换数据，需配合路由跳转，
 // 否则在知识库页点击会话/新建对话时数据变了但页面仍停留在原路由
@@ -52,6 +54,10 @@ const openSession = async (id: string) => {
             <button class="nav-item" :class="{ 'nav-item--active': isRagActive() }" @click="toRag">
                 <AppIcon name="book" :size="16" />
                 <span>RAG 知识库</span>
+            </button>
+            <button class="nav-item" :class="{ 'nav-item--active': isTenderActive() }" @click="toTender">
+                <AppIcon name="file" :size="16" />
+                <span>标书复核</span>
             </button>
         </nav>
 

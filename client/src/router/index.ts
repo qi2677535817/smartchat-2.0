@@ -1,6 +1,7 @@
 import ChatView from '@/views/ChatView.vue'
 import Layout from '@/views/Layout.vue'
 import KnowledgeView from '@/views/KnowledgeView.vue'
+import TenderView from '@/views/TenderView.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
 const routes: any[] = [
@@ -21,6 +22,11 @@ const routes: any[] = [
         path:'/knowledge',
         name:'knowledge',
         component: KnowledgeView
+      },
+      {
+        path:'/tender',
+        name:'tender',
+        component: TenderView
       }
     ]
   }
