@@ -50,11 +50,41 @@ export class ChatService {
     messages: ChatMessage[],
     model: ChatMessageDto['model'],
   ): Promise<any> {
+    return this.runToolLoop(messages, model);
+  }
+
+  /**
+   * 通用工具调用循环（非流式，公开）：调用模型 → 若有 tool_calls 则执行并追加结果 → 再调用，
+   * 直到模型返回普通文本。
+   * chat 自身与标书提取流程共用（提取时传入 submit_requirements 并设 toolChoice='required'），
+   * 遵循「复用既有 FC 引擎」约束。
+   *
+   * @param messages   对话历史（内部复制，不修改入参）
+   * @param model      模型名
+   * @param toolDefs   本次可用工具定义（默认全局 tools）
+   * @param handlers   工具执行器映射（默认全局 toolHandlers）
+   * @param toolChoice 工具选择策略
+   */
+  async runToolLoop(
+    messages: ChatMessage[],
+    model: ChatMessageDto['model'],
+    toolDefs: ChatMessageDto['tools'] = tools,
+    handlers: Record<string, (args: any) => Promise<any> | any> = toolHandlers,
+    toolChoice: string = 'auto',
+  ): Promise<any> {
     // 复制一份 messages，避免修改外部传入的数组
-    let currentMessages: ChatMessage[] = [...(messages ?? [])];
+    const currentMessages: ChatMessage[] = [...(messages ?? [])];
 
     while (true) {
-      const response = await this.requestChat(currentMessages, false, model, undefined, tools);
+      const response = await this.requestChat(
+        currentMessages,
+        false,
+        model,
+        undefined,
+        toolDefs,
+        undefined,
+        toolChoice,
+      );
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`DeepSeek API 错误 ${response.status}:${errorText}`);
@@ -72,13 +102,11 @@ export class ChatService {
         return message;
       }
 
-      // 模型要求调用工具，逐个执行
-      const toolResults = await this.executeToolCalls(message.tool_calls);
+      // 模型要求调用工具，逐个执行（使用本次传入的执行器）
+      const toolResults = await this.executeToolCalls(message.tool_calls, handlers);
 
-      // 把工具执行结果追加到历史
+      // 把工具执行结果追加到历史，继续循环
       currentMessages.push(...toolResults);
-
-      // 继续循环，让模型根据工具结果生成最终回答
     }
   }
 
@@ -301,12 +329,13 @@ export class ChatService {
       type: string;
       function: { name: string; arguments: string };
     }>,
+    handlers: Record<string, (args: any) => Promise<any> | any> = toolHandlers,
   ): Promise<Array<{ role: 'tool'; content: string; tool_call_id: string }>> {
     const results: Array<{ role: 'tool'; content: string; tool_call_id: string }> = [];
 
     for (const toolCall of toolCalls) {
       const { name, arguments: argsStr } = toolCall.function;
-      const handler = toolHandlers[name];
+      const handler = handlers[name];
 
       if (!handler) {
         results.push({
@@ -347,6 +376,7 @@ export class ChatService {
     signal?: AbortSignal,
     tools?: ChatMessageDto['tools'],
     ragList?: string[],
+    toolChoice: string = 'auto',
   ) {
     let ragTxt = (ragList && ragList?.length > 0) ? `基于以下资料回答用户问题 【资料】： ${ragList?.join('\n【资料】：')} 如果资料中没有相关信息，请如实说明不知道`: ''
     const body = {
@@ -365,7 +395,7 @@ export class ChatService {
       ],
       stream,
       tools,
-      tool_choice: 'auto',
+      tool_choice: toolChoice,
     };
     // console.log('【请求大模型】body:', JSON.stringify(body, null, 2));
     return fetch(this.DEEPSEEK_BASE_URL, {
