@@ -29,40 +29,46 @@ export class SessionAttachmentService {
         private readonly embedding: EmbeddingService,
     ) {}
 
-    // 上传并解析 PDF 附件：提取文本 → 分块 → 向量化 → 入库
+    // 上传附件：PDF 走管线提取文本，txt/md 直接读文本 → 分块 → 向量化 → 入库
     async upload(sessionId: string, filename: string, buffer: Buffer) {
-        const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "attach-"));
-        const pdfPath = path.join(tmpDir, "source.pdf");
-        const txtPath = path.join(tmpDir, "text.txt");
-        try {
-            await fs.promises.writeFile(pdfPath, buffer);
-            const text = await this.pipeline.extractText(pdfPath, txtPath);
-            if (!text || text.trim().length < MIN_TEXT_LEN) {
-                throw new BadRequestException("该 PDF 无可提取文本（可能是扫描件），请提供文字版 PDF");
+        let text: string
+        if (/\.pdf$/i.test(filename)) {
+            const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "attach-"));
+            const pdfPath = path.join(tmpDir, "source.pdf");
+            const txtPath = path.join(tmpDir, "text.txt");
+            try {
+                await fs.promises.writeFile(pdfPath, buffer);
+                text = await this.pipeline.extractText(pdfPath, txtPath);
+            } finally {
+                await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
             }
-
-            const pieces = ChunkingUtil.chunking(text, CHUNK_SIZE);
-            if (pieces.length > MAX_CHUNKS) {
-                throw new BadRequestException(`附件过大（${pieces.length} 个分块，超过 ${MAX_CHUNKS}），请拆分后上传`);
-            }
-
-            const chunks: { text: string; vector: number[] }[] = [];
-            for (const piece of pieces) {
-                const vector = await this.embedding.embedText(piece);
-                chunks.push({ text: piece, vector });
-            }
-
-            const attachment = new SessionAttachment();
-            attachment.sessionId = sessionId;
-            attachment.filename = filename;
-            attachment.text = text;
-            attachment.chunks = JSON.stringify(chunks);
-            attachment.createdAt = Date.now();
-            const saved = await this.attachmentRepo.save(attachment);
-            return { id: saved.id, filename: saved.filename, chunkCount: chunks.length };
-        } finally {
-            await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+        } else {
+            text = buffer.toString('utf-8');
         }
+
+        if (!text || text.trim().length < MIN_TEXT_LEN) {
+            throw new BadRequestException("文件内容为空或过短（PDF 可能是扫描件），请提供文字版内容");
+        }
+
+        const pieces = ChunkingUtil.chunking(text, CHUNK_SIZE);
+        if (pieces.length > MAX_CHUNKS) {
+            throw new BadRequestException(`附件过大（${pieces.length} 个分块，超过 ${MAX_CHUNKS}），请拆分后上传`);
+        }
+
+        const chunks: { text: string; vector: number[] }[] = [];
+        for (const piece of pieces) {
+            const vector = await this.embedding.embedText(piece);
+            chunks.push({ text: piece, vector });
+        }
+
+        const attachment = new SessionAttachment();
+        attachment.sessionId = sessionId;
+        attachment.filename = filename;
+        attachment.text = text;
+        attachment.chunks = JSON.stringify(chunks);
+        attachment.createdAt = Date.now();
+        const saved = await this.attachmentRepo.save(attachment);
+        return { id: saved.id, filename: saved.filename, chunkCount: chunks.length };
     }
 
     // 附件列表（不含向量）

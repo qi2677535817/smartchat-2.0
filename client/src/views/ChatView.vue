@@ -52,6 +52,7 @@ watch(() => chat.activeId, async () => {
   if (messageListRef.value) {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight
   }
+  loadSessionAttachments()
 })
 
 // 是否处于空状态（用于展示引导卡）
@@ -67,6 +68,35 @@ interface PendingFile {
 const pendingFiles = ref<PendingFile[]>([])
 const uploading = ref(false)
 
+// 已入库的会话附件（会话级，与全局 RAG 库隔离）
+interface SessionAttachmentItem {
+  id: string
+  filename: string
+  chunkCount: number
+  createdAt: number
+}
+const sessionAttachments = ref<SessionAttachmentItem[]>([])
+
+const loadSessionAttachments = async () => {
+  if (!chat.activeId) {
+    sessionAttachments.value = []
+    return
+  }
+  const res = await fetch(`${API_BASE}/sessions/${chat.activeId}/attachments`)
+  if (res.ok) {
+    sessionAttachments.value = await res.json()
+  }
+}
+
+const removeSessionAttachment = async (id: string) => {
+  const res = await fetch(`${API_BASE}/sessions/${chat.activeId}/attachments/${id}`, {
+    method: 'DELETE',
+  })
+  if (res.ok) {
+    sessionAttachments.value = sessionAttachments.value.filter(a => a.id !== id)
+  }
+}
+
 const formatSize = (size: number) => {
     if (size < 1024) return `${size} B`
     if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
@@ -77,17 +107,12 @@ const formatSize = (size: number) => {
 const uploadFile = () => {
   folderInputRef.value?.click()
 }
-// 选择文件：仅加入待发送列表，不上传
+// 选择文件：仅加入待发送列表，不上传（支持 PDF/TXT/MD，PDF 由后端 pdfplumber 管线解析）
 const onFileChange = (e: Event) => {
   const target = e.target as HTMLInputElement
   const files = target.files
   if (!files || files.length === 0) return
   for (const file of Array.from(files)) {
-    // 知识库仅支持文本文件，PDF 属二进制，file.text() 会读出乱码导致后端海量无效分块
-    if (/\.pdf$/i.test(file.name)) {
-      window.alert('知识库暂不支持 PDF 直接上传，请先转为 .txt / .md 文本，或使用「标书复核」功能解析 PDF')
-      continue
-    }
     pendingFiles.value.push({
       id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
       name: file.name,
@@ -104,19 +129,14 @@ const removePendingFile = (id: string) => {
   pendingFiles.value = pendingFiles.value.filter(f => f.id !== id)
 }
 
-// 逐个上传待发送附件；失败抛出异常由调用方处理（保留标签供重试）
-const uploadPendingFiles = async (files: PendingFile[]) => {
+// 逐个上传待发送附件到会话附件端点（严格隔离，不进全局 RAG 库）；失败抛异常由调用方处理
+const uploadPendingFiles = async (sessionId: string, files: PendingFile[]) => {
   for (const pf of files) {
-    const content = await pf.file.text()
-    const res = await fetch(`${API_BASE}/knowledge-base/documents`, {
+    const form = new FormData()
+    form.append('file', pf.file)
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/attachments`, {
       method: 'POST',
-      headers: {
-        'Content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        content,
-        name: pf.name
-      })
+      body: form,
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
@@ -125,18 +145,27 @@ const uploadPendingFiles = async (files: PendingFile[]) => {
   }
 }
 
-// 发送：先上传附件，再发送消息
+// 发送：确保会话存在 → 上传附件 → 发送消息
 const handleSend = async () => {
   if (chat.waiting || uploading.value) return
   const hasText = !!chat.message.trim()
   const files = pendingFiles.value.slice()
   if (!hasText && files.length === 0) return
 
+  // 0) 确保有会话
+  if (!chat.activeId) {
+    await chat.createSession()
+    if (!chat.activeId) {
+      window.alert('会话创建失败，请稍后重试')
+      return
+    }
+  }
+
   // 1) 上传附件
   if (files.length) {
     uploading.value = true
     try {
-      await uploadPendingFiles(files)
+      await uploadPendingFiles(chat.activeId, files)
       pendingFiles.value = pendingFiles.value.filter(f => !files.some(x => x.id === f.id))
       chat.messageList.push({
         content: `已上传文档：${files.map(f => f.name).join('、')}`,
@@ -261,8 +290,21 @@ onMounted(async () => {
     <!-- 输入区 -->
     <div class="composer-wrap">
       <div class="message-container" @click="focusInput">
-        <!-- 待发送附件 -->
-        <div v-if="pendingFiles.length" class="attachments" @click.stop>
+        <!-- 已入库附件 + 待发送附件 -->
+        <div v-if="sessionAttachments.length || pendingFiles.length" class="attachments" @click.stop>
+          <!-- 已入库附件（会话级） -->
+          <div v-for="sa in sessionAttachments" :key="sa.id" class="attachment attachment--saved">
+            <span class="attachment__icon"><AppIcon name="check" :size="15" /></span>
+            <span class="attachment__meta">
+              <span class="attachment__name" :title="sa.filename">{{ sa.filename }}</span>
+              <span class="attachment__size">{{ sa.chunkCount }} 个分块</span>
+            </span>
+            <button class="attachment__del" title="删除附件" aria-label="删除附件" :disabled="uploading || chat.waiting"
+              @click="removeSessionAttachment(sa.id)">
+              <AppIcon name="close" :size="13" />
+            </button>
+          </div>
+          <!-- 待发送附件 -->
           <div v-for="pf in pendingFiles" :key="pf.id" class="attachment">
             <span class="attachment__icon"><AppIcon name="file" :size="15" /></span>
             <span class="attachment__meta">
@@ -305,8 +347,8 @@ onMounted(async () => {
           </button>
         </div>
       </div>
-      <p class="composer-hint">附件将在点击发送时上传入库 · AI 生成内容可能存在偏差，重要结论请核对引用原文</p>
-      <input type="file" ref="folderInputRef" accept=".txt,.md" multiple style="display:none"
+      <p class="composer-hint">附件将在点击发送时加入本对话（仅本对话可用）· AI 生成内容可能存在偏差，重要结论请核对引用原文</p>
+      <input type="file" ref="folderInputRef" accept=".pdf,.txt,.md" multiple style="display:none"
         @change="onFileChange"></input>
     </div>
   </div>
@@ -738,6 +780,16 @@ onMounted(async () => {
         border: 1px solid var(--brand-100);
         border-radius: var(--r-sm);
         transition: background .16s ease, border-color .16s ease;
+
+        &--saved {
+            background: #f0fdf4;
+            border-color: #bbf7d0;
+
+            .attachment__icon {
+                color: var(--success);
+                background: var(--white);
+            }
+        }
     }
 
     .attachment__icon {
