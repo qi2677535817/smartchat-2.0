@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { TENDER_DIR, TenderService } from './tender.service'
 import { TenderExtractionService } from './tender-extraction.service'
 import { PythonPipelineService } from '../pdf-pipeline/python-pipeline.service'
+import { ExtractionQueueService } from './extraction-queue.service'
 import { CATEGORIES } from './tender-extraction.prompt'
 
 /**
@@ -90,6 +91,7 @@ export class TenderTaskService {
         private readonly tenderService: TenderService,
         private readonly extraction: TenderExtractionService,
         private readonly pipeline: PythonPipelineService,
+        private readonly queue: ExtractionQueueService,
     ) {}
 
     /**
@@ -147,6 +149,17 @@ export class TenderTaskService {
     private async run(id: string, model: string, entry: TaskEntry): Promise<void> {
         const { snapshot, emitter } = entry
         const emit = (evt: TaskEvent) => emitter.emit('event', evt)
+
+        // 并发闸门：已达上限则先排队并推送 queued（含位次），再等待空槽
+        if (this.queue.active >= this.queue.maxConcurrent) {
+            const ahead = this.queue.pending + 1
+            snapshot.status = 'queued'
+            snapshot.ahead = ahead
+            await this.tenderService.updateStatus(id, { status: 'queued' }).catch(() => {})
+            emit({ type: 'queued', ahead })
+        }
+        const release = await this.queue.acquire()
+
         try {
             const doc = await this.tenderService.findDocument(id)
             if (!doc) throw new Error('记录不存在')
@@ -224,6 +237,7 @@ export class TenderTaskService {
             // 终态快照保留 5 分钟供迟到订阅者直接取结果；过期后仅依赖数据库查询
             const timer = setTimeout(() => this.tasks.delete(id), TERMINAL_TTL_MS)
             timer.unref?.()
+            release() // 释放并发槽位：务必最后执行，保证排队任务被唤醒
         }
     }
 
