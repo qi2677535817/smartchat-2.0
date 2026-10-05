@@ -181,6 +181,15 @@ export class TenderTaskService {
         return { ok: true, status: 'cancelled' }
     }
 
+    // 丢弃驻留任务（删除任务时调用）：置取消标记并移除监听，避免后台继续写已删除的产物
+    discard(id: string): void {
+        const entry = this.tasks.get(id)
+        if (!entry) return
+        entry.cancelled = true
+        entry.emitter.removeAllListeners()
+        this.tasks.delete(id)
+    }
+
     // 进入终态 cancelled：落库 + 通知订阅者（连接随即由控制器关闭）
     private async finishCancelled(
         id: string,

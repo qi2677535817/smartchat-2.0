@@ -1,6 +1,7 @@
 import {
     BadRequestException,
     Controller,
+    Delete,
     Get,
     Logger,
     MessageEvent,
@@ -23,7 +24,7 @@ import type { Response } from "express";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { TENDER_DIR, TenderService } from "./tender.service";
-import { TenderTaskService } from "./tender-task.service";
+import { TERMINAL_STATUS, TenderTaskService } from "./tender-task.service";
 import { TenderDocument } from "./tender-document.entity";
 import { PythonPipelineService } from "../pdf-pipeline/python-pipeline.service";
 
@@ -192,6 +193,21 @@ export class TenderController {
         const res = await this.taskService.cancel(id);
         if (!res.ok) throw new NotFoundException('记录不存在');
         return { id, status: res.status };
+    }
+
+    // DELETE /tender/documents/:id —— 删除任务及其磁盘产物（不可恢复）
+    // 进行中任务先取消（协作式），再从驻留表移除监听，最后删记录并递归清理 data-cache/tender/<id>/
+    @Delete('documents/:id')
+    async deleteDocument(@Param('id') id: string) {
+        const doc = await this.tenderService.findDocument(id);
+        if (!doc) throw new NotFoundException('记录不存在');
+        // 非终态任务先取消，避免后台继续往即将被删除的目录写产物
+        if (!TERMINAL_STATUS.includes(doc.status)) {
+            await this.taskService.cancel(id);
+        }
+        this.taskService.discard(id);
+        await this.tenderService.removeDocument(id);
+        return { id, deleted: true };
     }
 
     // 记录 → 前端任务摘要

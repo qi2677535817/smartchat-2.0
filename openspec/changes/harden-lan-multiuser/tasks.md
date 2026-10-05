@@ -115,6 +115,24 @@
 
 **commit**：`feat(tender): 支持手动取消进行中的提取任务`
 
+## 8. 任务删除
+
+> 需求：任务列表支持删除任务及其磁盘产物。
+
+- [ ] 8.1 `TenderService.removeDocument(id)`：删除记录 + 递归清理 `data-cache/tender/<id>/`
+- [ ] 8.2 `TenderTaskService.discard(id)`：置取消标记、移除监听、从驻留表删除
+- [ ] 8.3 新增 `DELETE /tender/documents/:id`：非终态先取消 → `discard` → 删除记录与产物目录
+- [ ] 8.4 `TenderView.vue`：任务卡片头部增加「删除」按钮（二次确认），删除后本地移除并断开订阅
+
+**验收**：
+- 删除已完成任务 → 列表移除，`data-cache/tender/<id>/` 目录消失，`GET /tender/documents/:id` 返回 404
+- 删除进行中任务 → 先取消再移除；确认目录被清理
+- 删除不存在的 id → 404
+- 连续「提交 → 删除」3 次后，并发闸门活动任务数归 0（无槽位泄漏）
+- `cd server && npm run build` 与 `cd client && npx vue-tsc --noEmit` 均退出码 0
+
+**commit**：`feat(tender): 支持删除任务及其磁盘产物`
+
 ## 明确不做（越界即停）
 
 - 不改 `build_review_html.py` / `extract_text.py` 等任何 skill 脚本（红线 1/6）

@@ -276,6 +276,31 @@ const cancelTask = async (t: TaskItem) => {
     }
 }
 
+/**
+ * 删除任务及其磁盘产物（不可恢复）
+ * 进行中任务由后端先取消再删除；前端同时断开订阅并本地移除，避免残留连接
+ */
+const deleteTask = async (t: TaskItem) => {
+    const running = isRunning(t.status)
+    const tip = running
+        ? `任务「${t.filename}」正在进行，删除将同时取消它。确定继续？`
+        : `确定删除任务「${t.filename}」及其产物？此操作不可恢复。`
+    if (!window.confirm(tip)) return
+    try {
+        const res = await fetch(`${API_BASE}/tender/documents/${t.id}`, { method: 'DELETE' })
+        // 404 视为已删除，同样从列表移除
+        if (!res.ok && res.status !== 404) {
+            errorMsg.value = describeError(res.status, await readErrorText(res))
+            return
+        }
+        subs.get(t.id)?.abort()
+        subs.delete(t.id)
+        tasks.value = tasks.value.filter(x => x.id !== t.id)
+    } catch (e) {
+        errorMsg.value = e instanceof Error ? e.message : String(e)
+    }
+}
+
 onMounted(loadTasks)
 
 // 离开页面时断开所有 SSE 连接（任务在后端继续执行，结果不丢）
@@ -369,10 +394,13 @@ const onFileChange = async (e: Event) => {
                 <div class="task-list__head">提取任务（{{ tasks.length }}）</div>
 
                 <div v-for="t in tasks" :key="t.id" class="card task-item">
-                    <!-- 任务头部：文件名 + 状态徽标 -->
+                    <!-- 任务头部：文件名 + 状态徽标 + 删除 -->
                     <div class="task-item__head">
                         <span class="task-item__file">{{ t.filename }}</span>
-                        <span class="badge" :class="badgeClass(t.status)">{{ statusLabel(t.status) }}</span>
+                        <div class="task-item__head-right">
+                            <span class="badge" :class="badgeClass(t.status)">{{ statusLabel(t.status) }}</span>
+                            <button class="task-item__del" title="删除任务及其产物" @click="deleteTask(t)">删除</button>
+                        </div>
                     </div>
 
                     <!-- 进行中：进度条 + 阶段文案 + 实时条目数 + 取消按钮 -->
@@ -529,6 +557,32 @@ const onFileChange = async (e: Event) => {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* 头部右侧：状态徽标 + 删除按钮 */
+.task-item__head-right {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: none;
+}
+
+/* 删除按钮：低调样式，hover 时转为危险色 */
+.task-item__del {
+    padding: 2px 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ink-500);
+    background: transparent;
+    border: 1px solid var(--ink-100);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color .15s ease, border-color .15s ease;
+
+    &:hover {
+        color: var(--danger);
+        border-color: #fecaca;
+    }
 }
 
 /* 状态徽标修饰符（.badge 为全局样式） */

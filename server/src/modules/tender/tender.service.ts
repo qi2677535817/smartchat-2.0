@@ -144,4 +144,14 @@ export class TenderService implements OnModuleInit {
         if (patch.errorMsg !== undefined) data.errorMsg = patch.errorMsg ? patch.errorMsg.slice(0, 500) : null;
         await this.tenderDocRepo.update(id, data);
     }
+
+    // 删除任务记录并清理磁盘产物目录（任务列表支持删除；进行中任务由调用方先行取消）
+    async removeDocument(id: string): Promise<boolean> {
+        const doc = await this.tenderDocRepo.findOne({ where: { id } });
+        if (!doc) return false;
+        await this.tenderDocRepo.delete({ id });
+        // 递归删除 <id>/ 下的 source.pdf / pages.json / items.json / review.html
+        await fs.promises.rm(path.join(TENDER_DIR, id), { recursive: true, force: true }).catch(() => {});
+        return true;
+    }
 }

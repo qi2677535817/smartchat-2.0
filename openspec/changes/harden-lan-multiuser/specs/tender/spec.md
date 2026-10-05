@@ -169,3 +169,32 @@
 - **WHEN** 连续执行「提交 → 取消」多次
 - **THEN** 并发闸门中处于执行态的任务数最终归 0
 - **AND** 后续新任务可正常获得槽位
+
+### Requirement: 任务删除
+
+系统 SHALL 允许删除任意状态的任务，删除 SHALL 同时清理该任务的数据库记录与磁盘产物目录。
+
+#### Scenario: 删除已终态任务
+
+- **WHEN** 对 `done` / `failed` / `cancelled` 的任务发起删除
+- **THEN** 接口返回 2xx
+- **AND** `tender_documents` 中该记录被删除
+- **AND** `data-cache/tender/<id>/` 目录（含 `source.pdf`、`items.json`、`review.html`）被递归删除
+- **AND** 此后 `GET /tender/documents/:id` 返回 404
+
+#### Scenario: 删除进行中任务
+
+- **WHEN** 对非终态任务发起删除
+- **THEN** 该任务先被取消（状态置 `cancelled`），后台执行在下一个检查点停止
+- **AND** 其记录与产物目录随后被删除
+- **AND** 并发槽位在任务停止后正常释放
+
+#### Scenario: 删除不存在的任务
+
+- **WHEN** 对不存在的 `id` 发起删除
+- **THEN** 返回 404
+
+#### Scenario: 删除不泄漏并发槽位
+
+- **WHEN** 连续执行「提交 → 删除」多次
+- **THEN** 并发闸门中处于执行态的任务数最终归 0
