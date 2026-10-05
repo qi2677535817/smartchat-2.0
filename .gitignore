@@ -1,0 +1,41 @@
+# ===== 依赖 =====
+node_modules/
+
+# ===== 构建产物 =====
+dist/
+build/
+*.tsbuildinfo
+
+# ===== 运行时数据（SQLite / 上传与管线产物）=====
+data-cache/
+*.db
+*.sqlite
+
+# ===== 日志 =====
+logs/
+*.log
+
+# ===== 环境变量（含 API Key，严禁入库）=====
+.env
+.env.*
+!.env.example
+
+# ===== 编辑器 / 系统 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ===== 本地调试 / 抓取产物 =====
+server/downloaded.html
+server/case*.json
+server/n404.json
+server/review-resp.json
+server/check-table.js
+
+# ===== 本地测试用招标文件（体积大，不入库）=====
+/CPU高性能计算集群_采购文件.pdf
+
+# ===== 临时提交信息文件 =====
+.git-msg-*.txt
