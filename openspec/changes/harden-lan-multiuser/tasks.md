@@ -68,7 +68,7 @@
 
 ## 5. 部署基线与阶段验收
 
-- [ ] 5.1 新增 `deploy/ecosystem.config.js`（PM2：server + client 双进程、`max_memory_restart: 1G`、日志路径）
+- [ ] 5.1 新增 `deploy/ecosystem.config.js`（PM2：server 单实例 fork、`max_memory_restart: 1G`、日志路径；前端由 Nginx 托管静态产物，避免用 dev server 扛生产流量）
 - [ ] 5.2 新增 `deploy/nginx.conf.example`（`proxy_read_timeout 900s`、`proxy_buffering off`、`client_max_body_size 210m`）
 - [ ] 5.3 新增 `docs/局域网多人部署指南.md`（依赖安装、构建、守护、开机自启、故障排查）
 - [ ] 5.4 最终 `cd server && npm run build` 与 `cd client && npx vue-tsc --noEmit` 双双通过

@@ -1,0 +1,39 @@
+# 局域网反向代理示例（openspec/changes/harden-lan-multiuser/design.md §8）
+#
+# 关键点：
+#   1) SSE 长连接不能被默认 60s 超时切断 → proxy_read_timeout 必须放宽到 900s
+#   2) 必须关闭响应缓冲（proxy_buffering off），否则 queued/progress 事件会被攒着不发
+#   3) 上传体积上限要与后端 TENDER_MAX_UPLOAD_MB（默认 200）对齐
+#
+# 使用：替换 <> 中的路径后，include 到 nginx.conf 的 http {} 块内并 reload。
+
+server {
+    listen      8080;
+    server_name _;                       # 局域网内按 IP 访问
+
+    # 上传体积上限：需 >= 后端 TENDER_MAX_UPLOAD_MB（默认 200）
+    client_max_body_size 210m;
+
+    # 前端静态资源（client 构建产物 dist/）
+    root  <仓库绝对路径>/client/dist;
+    index index.html;
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 后端 API：前端请求 /api/** → 后端 /**（后端未设置全局前缀）
+    location /api/ {
+        proxy_pass http://127.0.0.1:3000/;
+        proxy_http_version 1.1;
+        proxy_set_header Host       $host;
+        proxy_set_header X-Real-IP  $remote_addr;
+        proxy_set_header Connection '';
+
+        # ---- SSE 必需配置 ----
+        proxy_buffering off;             # 不缓冲，事件实时下发
+        proxy_cache     off;
+        proxy_read_timeout 900s;         # 覆盖默认 60s，保证长任务连接不被切断
+        proxy_send_timeout 900s;
+        chunked_transfer_encoding off;
+    }
+}
