@@ -9,7 +9,9 @@ export class RerankService {
 
     constructor(private readonly configService: ConfigService) {
         this.RERANK_BASE_URL = this.configService.get('RERANK_BASE_URL')!
-        this.RERANK_API_KEY = this.configService.get('EMBEDDING_API_KEY')!
+        this.RERANK_API_KEY =
+            this.configService.get('RERANK_API_KEY') ??
+            this.configService.get('EMBEDDING_API_KEY')!
         this.RERANK_MODEL = this.configService.get('RERANK_MODEL')!
     }
 

@@ -1,293 +1,251 @@
-import { ref, reactive, watch, computed } from "vue";
-import { defineStore } from "pinia";
+import { defineStore } from 'pinia'
+import { reactive, ref } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
-import { useRoute } from "vue-router";
-import router from "@/router";
 
-interface Message {
-    content: string
-    role: 'user' | 'assistant',
-    reasoning_content?: string,
-    showReasoning?: boolean,
-    renderedHtml?: string,
-    reasoningHtml?: string,
-    citations?: [{
-        name: string,
-        index: number
-    }]
+export interface ChatCitation {
+  name: string
+  index: number
 }
-interface Session {
-    id: string,
-    messages: Message[],
-    createdAt: number,
-    title: string,
+
+export interface ChatMessage {
+  content: string
+  role: 'user' | 'assistant'
+  reasoning_content?: string
+  showReasoning?: boolean
+  renderedHtml?: string
+  reasoningHtml?: string
+  citations?: ChatCitation[]
 }
+
+export interface SessionItem {
+  id: string
+  title: string
+  createdAt: number
+}
+
+interface StreamEvent {
+  type: 'rag' | 'reasoning' | 'answer'
+  content?: string
+  list?: ChatCitation[]
+}
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:3000'
 
 export const useChatStore = defineStore('chat', () => {
-    const route = useRoute()
-    const message = ref('')
-    const sessions = ref<Session[]>([])
-    const activeId = computed((): string => {
-        return String(route.params.id ?? '') 
+  // ---------------- 状态 ----------------
+  const title = ref('')
+  const message = ref('')
+  const messageList = ref<ChatMessage[]>([])
+  const waiting = ref(false)
+  const sessions = ref<SessionItem[]>([])
+  const activeId = ref('')
+  const showLLM = ref(false)
+  const llmModel = reactive({ name: 'deepseek-v4-flash', icon: '⚡' })
+  const llmList = reactive([
+    { name: 'deepseek-v4-flash', icon: '⚡' },
+    { name: 'deepseek-v4-pro', icon: '🧠' },
+  ])
+
+  // 中断控制器：不需要响应式
+  let abortController: AbortController | null = null
+
+  // ---------------- 会话管理 ----------------
+  async function initSessions() {
+    const res = await fetch(`${API_BASE}/sessions`)
+    if (!res.ok) return
+    sessions.value = await res.json()
+    if (sessions.value.length > 0) {
+      await switchSession(sessions.value[0]!.id)
+    } else {
+      await createSession()
+    }
+  }
+
+  async function createSession() {
+    const res = await fetch(`${API_BASE}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '新对话' }),
     })
-    const messageList = computed((): Message[] => { 
-        // 如果是第一次对话，这里就没有数据需要加判断
-        let index = sessions.value.findIndex(item => item.id === activeId.value)
-        if (index > -1) {
-            return sessions.value[index]!.messages
-        } else {
-            return []
+    if (!res.ok) return
+    const session: SessionItem = await res.json()
+    sessions.value.push(session)
+    await switchSession(session.id)
+  }
+
+  async function switchSession(id: string) {
+    // 切走时停掉还在生成的流
+    if (waiting.value) stopGeneration()
+    activeId.value = id
+    const current = sessions.value.find(s => s.id === id)
+    title.value = current?.title ?? ''
+    const res = await fetch(`${API_BASE}/sessions/${id}/messages`)
+    if (!res.ok) return
+    const msgs: Array<{
+      role: string
+      content: string
+      reasoning?: string | null
+    }> = await res.json()
+    messageList.value = msgs.map(m => ({
+      content: m.content,
+      role: m.role === 'user' ? 'user' : 'assistant',
+      reasoning_content: m.reasoning ?? '',
+      showReasoning: false,
+      renderedHtml:
+        m.role === 'assistant' ? renderMarkdown(m.content) : undefined,
+      reasoningHtml:
+        m.role === 'assistant' ? renderMarkdown(m.reasoning ?? '') : undefined,
+    }))
+  }
+
+  async function deleteSession(id: string) {
+    const res = await fetch(`${API_BASE}/sessions/${id}`, { method: 'DELETE' })
+    if (!res.ok) return
+    const idx = sessions.value.findIndex(s => s.id === id)
+    if (idx !== -1) sessions.value.splice(idx, 1)
+    if (activeId.value === id) {
+      if (sessions.value.length > 0) {
+        await switchSession(sessions.value[0]!.id)
+      } else {
+        activeId.value = ''
+        title.value = ''
+        messageList.value = []
+      }
+    }
+  }
+
+  // ---------------- 发送 / 停止 ----------------
+  async function sendMessage() {
+    const content = message.value.trim()
+    if (content === '' || waiting.value) return
+    // 没有会话时自动建一个
+    if (!activeId.value) await createSession()
+
+    messageList.value.push({ content, role: 'user' })
+    message.value = ''
+    waiting.value = true
+
+    // 首条消息后本地更新会话标题（展示层；后端暂无更新标题接口）
+    const current = sessions.value.find(s => s.id === activeId.value)
+    if (current && current.title === '新对话') {
+      current.title = content.slice(0, 12)
+      title.value = current.title
+    }
+
+    // assistant 占位消息，流式内容往里追加
+    const assistantMsg: ChatMessage = {
+      content: '',
+      role: 'assistant',
+      reasoning_content: '',
+      citations: [],
+    }
+    messageList.value.push(assistantMsg)
+
+    // 组装历史（去掉最后的 assistant 占位，过滤空 assistant 消息）
+    const history = messageList.value
+      .slice(0, -1)
+      .filter(m => m.role === 'user' || m.content.trim() !== '')
+      .map(m => ({ role: m.role, content: m.content }))
+
+    abortController = new AbortController()
+
+    try {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history, model: llmModel.name, sessionId: activeId.value || undefined }),
+        signal: abortController.signal,
+      })
+      if (!res.ok || !res.body) {
+        const errText = await res.text().catch(() => '')
+        throw new Error(`请求失败 ${res.status}: ${errText}`)
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        // stream:true 防止中文多字节字符跨 chunk 被解成乱码
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (trimmed === '' || !trimmed.startsWith('data:')) continue
+          let event: StreamEvent
+          try {
+            event = JSON.parse(trimmed.slice(5).trim())
+          } catch {
+            continue
+          }
+          if (event.type === 'reasoning' && event.content) {
+            assistantMsg.reasoning_content =
+              (assistantMsg.reasoning_content ?? '') + event.content
+          } else if (event.type === 'answer' && event.content) {
+            assistantMsg.content += event.content
+          } else if (event.type === 'rag' && event.list) {
+            assistantMsg.citations = event.list
+          }
         }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // 用户主动停止，保留已生成的部分内容
+      } else {
+        assistantMsg.content += `\n\n> ⚠️ 请求出错：${err instanceof Error ? err.message : String(err)}`
+      }
+    } finally {
+      assistantMsg.renderedHtml = renderMarkdown(assistantMsg.content)
+      assistantMsg.reasoningHtml = renderMarkdown(
+        assistantMsg.reasoning_content ?? '',
+      )
+      waiting.value = false
+      abortController = null
+      // 本轮对话持久化到 SQLite
+      await persistTurn(content, assistantMsg)
+    }
+  }
+
+  function stopGeneration() {
+    abortController?.abort()
+    abortController = null
+    waiting.value = false
+  }
+
+  async function persistTurn(userContent: string, assistantMsg: ChatMessage) {
+    if (!activeId.value) return
+    const save = (body: Record<string, unknown>) =>
+      fetch(`${API_BASE}/sessions/${activeId.value}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    await save({ role: 'user', content: userContent })
+    await save({
+      role: 'assistant',
+      content: assistantMsg.content,
+      reasoning_content: assistantMsg.reasoning_content ?? '',
     })
-    const title = computed((): string => {
-        let index = sessions.value.findIndex(item => item.id === activeId.value)
-        if (index > -1) {
-            return sessions.value[index]!.title
-        } else {
-            return '新对话'
-        }
-    })
-    const waiting = ref(false)
-    const showLLM = ref(false)
-    const llmList = ref([
-        {
-            name: "deepseek-v4-flash",
-            icon: "https://deepseek.ai/static/media/deepseek-v4-flash.7e0f3c1d.png"
-        },
-        {
-            name: "deepseek-v4-pro",
-            icon: "https://deepseek.ai/static/media/deepseek-v4-pro.7e0f3c1d.png"
-        }
-    ])
-    const llmModel = reactive({
-        name: llmList.value[0]!.name,
-        icon: llmList.value[0]!.icon
-    })
+  }
 
-    let abortController: AbortController | null = null
-    const sendMessage = async () => {
-        if (message.value.trim() !== '' && !waiting.value) {
-            messageList.value.push({
-                content: message.value,
-                role: 'user'
-            })
-            waiting.value = true
-            const messages = messageList.value.map(item => ({
-                role: item.role,
-                content: item.content,
-                reasoning_content: item.reasoning_content
-            }))
-            let index = sessions.value.findIndex(item => item.id == activeId.value)
-            if (index > -1 && sessions.value[index]!.title == '新对话') {
-                sessions.value[index]!.title = sessions.value[index]!.messages[0]!.content.slice(0, 12)
-            }
-            // 定义信号
-            abortController = new AbortController()
-            // 重组消息列表，添加系统消息
-            let res = await fetch('http://localhost:3000/chat/stream', {
-                method: "POST",
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ messages, model: llmModel.name }),
-                signal: abortController.signal
-            })
-            let read = res.body?.getReader()
-            let decoder = new TextDecoder()
-            messageList.value.push({
-                content: '',
-                role: 'assistant',
-                showReasoning: false,
-                renderedHtml: '',
-                reasoningHtml: ''
-            })
-            let buffer = ''
-            const targetMessages = messageList.value
-            try {
-                while (true) {
-                    const { done, value } = await read!.read()
-                    if (done) break
-                    let chunk = decoder.decode(value)
-                    buffer += chunk
-                    let lines = buffer.split('\n')
-                    buffer = lines.pop() || ''
-                    for (let line of lines) {
-                        if (line.trim() === '') continue
-                        if (!line.startsWith('data:')) continue
-                        const event = JSON.parse(line.slice(5).trim())
-                        if (event.type === 'reasoning') {
-                            targetMessages[targetMessages.length - 1]!.reasoning_content = (targetMessages[targetMessages.length - 1]!.reasoning_content ?? '') + event.content
-                        } else if (event.type === 'answer') {
-                            targetMessages[targetMessages.length - 1]!.content = (targetMessages[targetMessages.length - 1]!.content ?? '') + event.content
-                        } else if (event.type === 'rag') {
-                            targetMessages[targetMessages.length - 1]!.citations = event.list
-                        }
-                    }
-                }
-            } catch (err) {
-                if (err instanceof DOMException && err.name === 'AbortError') {
-                    console.log('用户主动停止生成')
-                    targetMessages[targetMessages.length - 1]!.content += '\n\n用户主动停止生成'
-                } else {
-                    throw err
-                }
-            } finally {
-                abortController = null
-            }
-            renderLastMessage()
-            waiting.value = false
-            message.value = ''
-
-        }
-    }
-
-    // 防抖：监听最后一条消息的变化，100ms后渲染
-    const RENDER_INTERVAL = 100
-    let lastRenderTime = 0
-    let renderTimer: ReturnType<typeof setTimeout> | null = null
-    watch(() => {
-        // 只关心最后一条 assistant消息, 返回 content + reasoning的合并串
-        const last = messageList.value[messageList.value.length - 1]
-        if (!last || last.role !== 'assistant') return ''
-        return last.content + '|' + (last.reasoning_content ?? '')
-    }, (newVal) => {
-        const now = Date.now()
-        // 情况1：已经超过 100ms 没渲染 -> 直接渲染
-        if (now - lastRenderTime >= RENDER_INTERVAL) {
-            if (renderTimer) clearTimeout(renderTimer)
-            renderLastMessage()
-            lastRenderTime = now
-            return
-        }
-        // 情況2：还没到100ms -> 设一个定时器，到时间就渲染
-        if (!renderTimer) {
-            renderTimer = setTimeout(() => {
-                renderLastMessage()
-                lastRenderTime = Date.now()
-                renderTimer = null
-            }, RENDER_INTERVAL - (now - lastRenderTime))
-        }
-    })
-
-    watch(sessions, () => {
-        saveSessions(activeId.value, sessions.value)
-    }, { deep: true })
-
-    /**
-     * 初始化数据
-     * @returns 
-     */
-    const initSessions = () => {
-        try {
-            let sessionsData = localStorage.getItem('chat_message')
-            if (!sessionsData) {
-                sessionsData = JSON.stringify({
-                    activeId: '',
-                    sessions: []
-                })
-            }
-            let data = JSON.parse(sessionsData)
-            // 这里判断sessions是否为空
-            if (!Array.isArray(data.sessions)) data = { activeId: '', sessions: [] }
-            if (data.sessions.length == 0) {
-                let id = crypto.randomUUID()
-                // 如果为空则创建一个新会话
-                data.sessions.push({
-                    id,
-                    createdAt: Date.now(),
-                    messages: [],
-                    title: "新对话"
-                })
-            }
-            let index = data.sessions.findIndex((item:Session) => item.id == data.activeId)
-            if(index > -1) {
-                router.replace('/chat/' + data.activeId)
-            }
-           
-            if (!activeId.value) {
-                router.replace('/chat/' + data.sessions[0].id) 
-            }
-
-            sessions.value = [...data.sessions]
-            return sessionsData
-        } catch (e) {
-            console.error(e)
-            return {}
-        }
-    }
-
-    const saveSessions = (id: string, list: Array<any>) => {
-        let obj = {
-            activeId: id,
-            sessions: list
-        }
-        localStorage.setItem('chat_message', JSON.stringify(obj))
-    }
-
-    const renderLastMessage = () => {
-        const last = messageList.value[messageList.value.length - 1]
-        if (!last || last.role !== 'assistant') return
-        last.renderedHtml = renderMarkdown(last.content)
-        last.reasoningHtml = renderMarkdown(last.reasoning_content ?? '')
-    }
-
-    const stopGeneration = () => {
-        abortController?.abort()
-    }
-
-    /**
-     * 新建会话
-     */
-    const createSession = () => {
-        let obj = {
-            id: crypto.randomUUID(),
-            createdAt: Date.now(),
-            messages: [],
-            title: "新对话"
-        }
-        router.replace('/chat/' + obj.id)
-        sessions.value.push(obj)
-    }
-
-    /**
-     * 切换会话
-     */
-    const switchSession = (id: string) => {
-        router.replace('/chat/' + id)
-    }
-
-    /**
-     * 删除会话 
-     */
-    const deleteSession = (id: string) => {
-        let index = sessions.value.findIndex(item => item.id === id)
-        if (index > -1) {
-            sessions.value.splice(index, 1)
-            if (sessions.value.length == 0) {
-                createSession()
-            }
-            if (id == activeId.value) {
-                router.replace('/chat/' + sessions.value[0]!.id)
-            }
-        }
-    }
-
-    return {
-        message,
-        messageList,
-        waiting,
-        showLLM,
-        llmList,
-        llmModel,
-        sendMessage,
-        stopGeneration,
-        renderLastMessage,
-        initSessions,
-        activeId,
-        title,
-        sessions,
-        createSession,
-        switchSession,
-        deleteSession
-    }
+  return {
+    // 状态
+    title,
+    message,
+    messageList,
+    waiting,
+    sessions,
+    activeId,
+    showLLM,
+    llmModel,
+    llmList,
+    // 方法
+    initSessions,
+    createSession,
+    switchSession,
+    deleteSession,
+    sendMessage,
+    stopGeneration,
+  }
 })
