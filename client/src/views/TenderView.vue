@@ -2,9 +2,14 @@
 /**
  * 标书复核页（Tender Review）
  * 职责：上传招标文件 PDF → 后端解析并逐块提取需求条目 → SSE 实时推送进度 → 生成「左原文 / 右清单」的人工复核界面。
- * 流程：POST /tender/documents 上传落盘 → GET /tender/documents/:id/extract（SSE）订阅提取进度 → 展示结果与入口。
+ * 流程：POST /tender/documents 上传落盘 → GET /tender/documents/:id/extract（SSE）订阅/启动提取任务 → 展示结果与入口。
+ *
+ * 局域网多人加固新增（openspec/changes/harden-lan-multiuser）：
+ *   1. 进入页面拉取最近任务，未完成任务可「继续查看进度」——刷新/断线不再丢结果
+ *   2. 支持 queued 事件：并发上限已满时提示排队位次
+ *   3. 上传错误按 413（超出体积上限）/ 503（服务端解析环境缺失）分流提示
  */
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 
 // 后端接口基础路径：优先取环境变量 VITE_API_BASE，未配置时回退到 /api（由本地或网关代理）
@@ -22,13 +27,22 @@ interface ExtractResult {
     failedBlocks: number  // 提取失败的文本块数量
 }
 
+/** 任务摘要（GET /tender/documents 的返回项） */
+interface TaskSummary {
+    id: string
+    filename: string
+    status: string
+    updatedAt: number | null
+}
+
 const fileInputRef = ref<HTMLInputElement | null>(null) // 隐藏的 <input type="file"> 引用，用于代码方式触发选文件
 const uploading = ref(false)   // 是否正在上传 PDF（控制上传按钮禁用与文案）
 const extracting = ref(false)  // 是否正在 SSE 流式提取（控制上传区 / 进度区的显示切换）
 const fileName = ref('')       // 当前处理的文件名（用于进度区与结果区展示）
 const errorMsg = ref('')       // 错误提示文案，非空时显示错误卡片
 const result = ref<ExtractResult | null>(null) // 提取结果，非空时显示结果卡片
-const stage = ref('')          // 当前阶段文案（如「正在逐块提取条目」「正在生成复核界面」）
+const stage = ref('')          // 当前阶段文案（如「正在逐块提取条目」「正在排队」）
+const recentTask = ref<TaskSummary | null>(null) // 未完成的最近任务，用于刷新后「继续查看进度」
 
 // 提取进度（由后端 SSE 事件实时更新）
 const progress = reactive({
@@ -36,6 +50,7 @@ const progress = reactive({
     blockIndex: 0,  // 当前已处理到的块序号（用于计算百分比）
     blockTotal: 0,  // 文档切分出的总块数
     itemCount: 0,   // 目前已提取的条目数
+    ahead: 0,       // 并发排队位次（queued 事件：前面还有几个任务）
 })
 
 /** 触发隐藏 file input 的点击，打开系统文件选择框 */
@@ -47,18 +62,24 @@ const pickFile = () => fileInputRef.value?.click()
  */
 const handleEvent = (evt: Record<string, unknown>) => {
     switch (evt.type) {
+        // 排队事件：并发上限已满，等待前面任务释放槽位（局域网加固新增）
+        case 'queued':
+            progress.ahead = Number(evt.ahead ?? 0)
+            stage.value = progress.ahead > 0 ? `排队中（前方还有 ${progress.ahead} 个任务）` : '正在排队'
+            break
         // 开始事件：初始化页数、总块数，并清零进度
         case 'start':
             progress.pageCount = Number(evt.pageCount ?? 0)
             progress.blockTotal = Number(evt.blockTotal ?? 0)
             progress.blockIndex = 0
             progress.itemCount = 0
+            progress.ahead = 0
             stage.value = '正在逐块提取条目'
             break
         // 进度事件：更新当前块、总块数与已提取条目数
         case 'progress':
             progress.blockIndex = Number(evt.blockIndex ?? 0)
-            progress.blockTotal = Number(evt.blockTotal ?? progress.blockTotal)
+            progress.blockTotal = Number(evt.blockTotal ?? 0)
             progress.itemCount = Number(evt.itemCount ?? 0)
             break
         // 生成事件：进入「生成复核界面」阶段
@@ -85,9 +106,41 @@ const handleEvent = (evt: Record<string, unknown>) => {
     }
 }
 
+/**
+ * 读取后端错误响应文案（Nest 统一返回 { statusCode, message }）
+ * @param res 失败响应
+ */
+const readErrorText = async (res: Response): Promise<string> => {
+    const raw = await res.text().catch(() => '')
+    try {
+        const body = JSON.parse(raw) as { message?: string | string[] }
+        if (body?.message) {
+            return Array.isArray(body.message) ? body.message.join('；') : body.message
+        }
+    } catch {
+        // 非 JSON 响应，原样返回
+    }
+    return raw
+}
+
+/**
+ * 上传/提取错误分流：413 与 503 给出明确指引，其余原样展示
+ * @param status  HTTP 状态码
+ * @param message 后端返回的错误文案
+ */
+const describeError = (status: number, message: string): string => {
+    if (status === 413) return message || '文件超过服务器允许的大小上限'
+    if (status === 503) {
+        return '服务端 PDF 解析环境不可用（缺少 Python 或 pdfplumber），请联系管理员检查部署'
+    }
+    return `上传失败（${status}）${message ? '：' + message.slice(0, 120) : ''}`
+}
+
 // SSE 订阅（fetch 流式读取，兼容后端 @Sse 输出）
 /**
  * 建立 SSE 连接并流式读取提取进度
+ * 语义为「订阅或启动」：若该任务已驻留则复用（断线重连不重复跑）；
+ * 若已完成则后端会立即补发 done 事件，前端无需重新上传。
  * @param id 上传接口返回的文档任务 ID
  */
 const subscribeExtract = async (id: string) => {
@@ -95,7 +148,7 @@ const subscribeExtract = async (id: string) => {
     try {
         const res = await fetch(`${API_BASE}/tender/documents/${id}/extract`)
         if (!res.ok || !res.body) {
-            errorMsg.value = `提取请求失败（${res.status}）`
+            errorMsg.value = describeError(res.status, await readErrorText(res))
             return
         }
         const reader = res.body.getReader() // 流读取器，逐段读取响应体
@@ -121,8 +174,49 @@ const subscribeExtract = async (id: string) => {
         errorMsg.value = e instanceof Error ? e.message : String(e)
     } finally {
         extracting.value = false
+        // 任务可能已进入终态，刷新「未完成任务」列表
+        void loadRecent()
     }
 }
+
+/**
+ * 拉取最近任务：若存在未完成任务（queued / extracting / generating），
+ * 记录到 recentTask 供用户「继续查看进度」（局域网加固：断线可恢复）
+ */
+const loadRecent = async () => {
+    try {
+        const res = await fetch(`${API_BASE}/tender/documents?limit=5`)
+        if (!res.ok) return
+        const data = (await res.json()) as { items?: TaskSummary[] }
+        const unfinished = (data.items ?? []).find(it =>
+            ['queued', 'extracting', 'generating'].includes(it.status),
+        )
+        recentTask.value = unfinished ?? null
+    } catch {
+        // 列表拉取失败不影响主流程
+    }
+}
+
+/** 继续订阅已驻留的任务：刷新页面后恢复进度显示 */
+const resumeTask = async () => {
+    const task = recentTask.value
+    if (!task) return
+    // 重置前端状态后重新订阅（后端会复用同一任务或补发终态结果）
+    recentTask.value = null
+    errorMsg.value = ''
+    result.value = null
+    stage.value = ''
+    fileName.value = task.filename
+    progress.pageCount = 0
+    progress.blockIndex = 0
+    progress.blockTotal = 0
+    progress.itemCount = 0
+    progress.ahead = 0
+    await subscribeExtract(task.id)
+}
+
+// 进入页面即检查是否有未完成任务（刷新后恢复入口）
+onMounted(loadRecent)
 
 /**
  * 文件选择回调：校验类型 → 上传落盘 → 触发 SSE 提取
@@ -142,10 +236,12 @@ const onFileChange = async (e: Event) => {
     errorMsg.value = ''
     result.value = null
     stage.value = ''
+    recentTask.value = null
     progress.pageCount = 0
     progress.blockIndex = 0
     progress.blockTotal = 0
     progress.itemCount = 0
+    progress.ahead = 0
     fileName.value = file.name
 
     // 1) 上传落盘
@@ -155,13 +251,13 @@ const onFileChange = async (e: Event) => {
         form.append('file', file)
         const res = await fetch(`${API_BASE}/tender/documents`, { method: 'POST', body: form })
         if (!res.ok) {
-            const text = await res.text().catch(() => '')
-            errorMsg.value = `上传失败（${res.status}）${text ? '：' + text.slice(0, 120) : ''}`
+            // 413（超出上限）/ 503（解析环境缺失）在此分流提示
+            errorMsg.value = describeError(res.status, await readErrorText(res))
             return
         }
         const { id } = await res.json()
         uploading.value = false
-        // 2) SSE 提取
+        // 2) SSE 提取（订阅或启动）
         await subscribeExtract(id)
     } catch (err) {
         errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -182,6 +278,7 @@ const reset = () => {
     errorMsg.value = ''
     fileName.value = ''
     stage.value = ''
+    void loadRecent()
 }
 </script>
 
@@ -196,6 +293,16 @@ const reset = () => {
         </div>
 
         <div class="tender__body">
+            <!-- 未完成任务恢复入口：刷新后仍可继续查看进度（局域网加固） -->
+            <div v-if="recentTask && !extracting && !result" class="card resume-card">
+                <span class="resume-card__icon"><AppIcon name="file" :size="20" /></span>
+                <div class="resume-card__body">
+                    <div class="resume-card__title">有未完成的提取任务</div>
+                    <div class="resume-card__file">{{ recentTask.filename }}</div>
+                </div>
+                <button class="btn btn-primary" @click="resumeTask">继续查看进度</button>
+            </div>
+
             <!-- 上传区：初始态（未提取且无结果） -->
             <div v-if="!extracting && !result" class="card upload-card" @click="pickFile">
                 <span class="upload-card__icon"><AppIcon name="file" :size="26" /></span>
@@ -300,6 +407,45 @@ const reset = () => {
         flex-direction: column;
         gap: var(--sp-4);
     }
+}
+
+/* 未完成任务恢复卡片 */
+.resume-card {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+}
+
+.resume-card__icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 40px;
+    height: 40px;
+    color: var(--brand-600);
+    background: var(--brand-50);
+    border: 1px solid var(--brand-100);
+    border-radius: var(--r-md);
+}
+
+.resume-card__body {
+    flex: 1;
+    min-width: 0;
+}
+
+.resume-card__title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink-900);
+}
+
+.resume-card__file {
+    font-size: 12.5px;
+    color: var(--ink-500);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* 上传区：整块可点击，纵向居中排列，hover 时高亮边框 */

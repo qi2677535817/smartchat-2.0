@@ -107,12 +107,41 @@ export class TenderService implements OnModuleInit {
         doc.path = pdfPath;
         doc.pageCount = null;
         doc.pageOffset = null;
-        doc.createdAt = Date.now();
+        const now = Date.now();
+        doc.createdAt = now;
+        doc.status = "uploaded";
+        doc.updatedAt = now;
         return { doc: await this.tenderDocRepo.save(doc), pdfPath };
     }
 
-    // 按 id 查询上传记录（下载端点用）
+    // 按 id 查询上传记录（下载端点 / 任务状态查询用）
     findDocument(id: string): Promise<TenderDocument | null> {
         return this.tenderDocRepo.findOne({ where: { id } });
+    }
+
+    // 最近任务列表：按 updatedAt 倒序，limit 夹取到 1..100（局域网加固 design §6）
+    async listDocuments(limit = 20): Promise<TenderDocument[]> {
+        const take = Math.min(100, Math.max(1, Number(limit) || 20));
+        return this.tenderDocRepo.find({
+            order: { updatedAt: "DESC", createdAt: "DESC" },
+            take,
+        });
+    }
+
+    // 更新任务状态：仅写入显式传入的字段，updatedAt 一律刷新；errorMsg 截断至 500 字符
+    async updateStatus(id: string, patch: {
+        status?: string;
+        itemCount?: number | null;
+        missCount?: number | null;
+        failedBlocks?: number | null;
+        errorMsg?: string | null;
+    }): Promise<void> {
+        const data: Record<string, unknown> = { updatedAt: Date.now() };
+        if (patch.status !== undefined) data.status = patch.status;
+        if (patch.itemCount !== undefined) data.itemCount = patch.itemCount;
+        if (patch.missCount !== undefined) data.missCount = patch.missCount;
+        if (patch.failedBlocks !== undefined) data.failedBlocks = patch.failedBlocks;
+        if (patch.errorMsg !== undefined) data.errorMsg = patch.errorMsg ? patch.errorMsg.slice(0, 500) : null;
+        await this.tenderDocRepo.update(id, data);
     }
 }
