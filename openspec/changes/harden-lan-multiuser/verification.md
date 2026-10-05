@@ -86,3 +86,15 @@ Get-ChildItem -Recurse -File tender-material-checklist | Get-FileHash -Algorithm
 
 > 定性说明：该问题**不属于后端缺陷**。`TenderTaskService` 以 `Map<id, TaskEntry>` 管理任务，不同 id 完全独立；
 > 并发闸门仅在同时执行数超过 `TENDER_MAX_CONCURRENCY` 时排队，不会取消或覆盖任何任务。
+
+## 六、任务手动取消（tasks 7）
+
+| 步骤 | 期望 | 实际 |
+|---|---|---|
+| 提取中点「取消任务」 | 转为「取消中…」→ 当前块结束后转「已取消」 | 待人工执行 |
+| 排队中任务取消 | 不执行提取，直接 `cancelled` | 待人工执行 |
+| 连续「提交 → 取消」3 次 | 并发槽位归 0，无泄漏 | 待人工执行 |
+| 已终态任务调取消接口 | 状态不变 | 待人工执行 |
+
+> 取消语义说明：采用**协作式取消**——单次模型调用无法中途 abort，故取消在「块边界」生效，
+> 最长需等待当前文本块处理完成；但状态对外**立即**变为 `cancelled`。

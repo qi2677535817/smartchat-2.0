@@ -18,11 +18,21 @@ import { CATEGORIES } from './tender-extraction.prompt'
  */
 
 // 任务状态机（与 tender_documents.status 列取值一致）
-export type TaskStatus = 'uploaded' | 'queued' | 'extracting' | 'generating' | 'done' | 'failed'
+export type TaskStatus =
+    | 'uploaded'
+    | 'queued'
+    | 'extracting'
+    | 'generating'
+    | 'done'
+    | 'failed'
+    | 'cancelled'
 
-// SSE 事件载荷（沿用既有协议，仅新增 queued）
+// 终态集合：进入后状态不再变化
+export const TERMINAL_STATUS: string[] = ['done', 'failed', 'cancelled']
+
+// SSE 事件载荷（沿用既有协议，新增 queued 与 cancelled）
 export interface TaskEvent {
-    type: 'queued' | 'start' | 'progress' | 'generating' | 'done' | 'error'
+    type: 'queued' | 'start' | 'progress' | 'generating' | 'done' | 'error' | 'cancelled'
     [key: string]: unknown
 }
 
@@ -53,6 +63,7 @@ export interface TaskSnapshot {
 interface TaskEntry {
     snapshot: TaskSnapshot
     emitter: EventEmitter
+    cancelled: boolean // 用户取消标记：run 在检查点读取后自行停止
 }
 
 // 终态快照保留时长：过期后仅依赖数据库查询（结果文件仍在磁盘，不丢）
@@ -136,6 +147,7 @@ export class TenderTaskService {
                 ahead: 0,
             },
             emitter: new EventEmitter(),
+            cancelled: false,
         }
         this.tasks.set(id, entry)
         entry.emitter.on('event', listener)
@@ -143,6 +155,41 @@ export class TenderTaskService {
             this.logger.error(`任务执行异常（${id}）：${e instanceof Error ? e.message : String(e)}`),
         )
         return { off: () => entry.emitter.off('event', listener), immediate: [] }
+    }
+
+    /**
+     * 取消任务
+     *
+     * 语义：置取消标记，由任务自身在下一个检查点（块边界 / 生成前后）停止。
+     * 正在进行的单次模型调用无法中途 abort，因此取消是「协作式」的，最长需等当前块跑完。
+     * 已终态的任务不受影响；服务重启后残留的中断态任务会被直接落库为 cancelled。
+     */
+    async cancel(id: string): Promise<{ ok: boolean; status: string }> {
+        const doc = await this.tenderService.findDocument(id)
+        if (!doc) return { ok: false, status: 'not-found' }
+        if (TERMINAL_STATUS.includes(doc.status)) {
+            return { ok: true, status: doc.status } // 已是终态，无需处理
+        }
+
+        const entry = this.tasks.get(id)
+        if (entry && !TERMINAL_STATUS.includes(entry.snapshot.status)) {
+            entry.cancelled = true
+            entry.snapshot.status = 'cancelled'
+        }
+        // 无论是否有驻留任务，都把状态落库（覆盖服务重启后的中断态）
+        await this.tenderService.updateStatus(id, { status: 'cancelled', errorMsg: null }).catch(() => {})
+        return { ok: true, status: 'cancelled' }
+    }
+
+    // 进入终态 cancelled：落库 + 通知订阅者（连接随即由控制器关闭）
+    private async finishCancelled(
+        id: string,
+        snapshot: TaskSnapshot,
+        emit: (evt: TaskEvent) => void,
+    ): Promise<void> {
+        await this.tenderService.updateStatus(id, { status: 'cancelled', errorMsg: null }).catch(() => {})
+        snapshot.status = 'cancelled'
+        emit({ type: 'cancelled' })
     }
 
     // 后台执行：状态流转 + 分块提取 + 生成复核 HTML + 落库
@@ -161,6 +208,12 @@ export class TenderTaskService {
         const release = await this.queue.acquire()
 
         try {
+            // 排队期间可能已被取消：拿到槽位后立刻让出，避免无谓执行
+            if (entry.cancelled) {
+                await this.finishCancelled(id, snapshot, emit)
+                return
+            }
+
             const doc = await this.tenderService.findDocument(id)
             if (!doc) throw new Error('记录不存在')
             const dir = path.join(TENDER_DIR, doc.id)
@@ -169,7 +222,7 @@ export class TenderTaskService {
             snapshot.status = 'extracting'
             await this.tenderService.updateStatus(id, { status: 'extracting' }).catch(() => {})
 
-            const { items, failedBlocks } = await this.extraction.extract(doc.path, dir, model, {
+            const { items, failedBlocks, cancelled } = await this.extraction.extract(doc.path, dir, model, {
                 onStart: (pageCount, blockTotal) => {
                     snapshot.pageCount = pageCount
                     snapshot.blockTotal = blockTotal
@@ -181,7 +234,15 @@ export class TenderTaskService {
                     snapshot.itemCount = itemCount
                     emit({ type: 'progress', blockIndex, blockTotal, itemCount })
                 },
+                // 用户取消：提取循环在每块开始前检查
+                isCancelled: () => entry.cancelled,
             })
+
+            // 用户取消：已完成块的结果不落盘，直接进入终态 cancelled
+            if (cancelled || entry.cancelled) {
+                await this.finishCancelled(id, snapshot, emit)
+                return
+            }
 
             if (items.length === 0) {
                 throw new Error('未提取到任何条目：请确认 PDF 为文字版且包含材料要求')
@@ -204,6 +265,12 @@ export class TenderTaskService {
             // 生成复核 HTML，并对未定位条目做锚点修正重试（提高定位率）
             const outPath = path.join(dir, 'review.html')
             const missCount = await this.generateWithAnchorRetry(doc.path, itemsPath, outPath, dir, title)
+
+            // 生成阶段耗时较长（Python 管线 + 锚点重试），若期间被取消则不再落终态 done
+            if (entry.cancelled) {
+                await this.finishCancelled(id, snapshot, emit)
+                return
+            }
 
             // 终态：done
             const result: TaskResult = {
@@ -312,6 +379,8 @@ export class TenderTaskService {
                 return [{ type: 'generating' }]
             case 'done':
                 return [{ type: 'done', id: s.id, ...s.result }]
+            case 'cancelled':
+                return [{ type: 'cancelled' }]
             case 'failed':
                 return [{ type: 'error', message: s.error ?? '提取失败' }]
             default:
@@ -335,6 +404,9 @@ export class TenderTaskService {
                 missCount: doc.missCount ?? 0,
                 failedBlocks: doc.failedBlocks ?? 0,
             }
+        }
+        if (status === 'cancelled') {
+            return { type: 'cancelled' }
         }
         if (status === 'failed') {
             return { type: 'error', message: doc.errorMsg ?? '提取失败' }

@@ -8,7 +8,8 @@
  *   1. 任务列表视图：可同时提交多个任务，各自独立订阅与显示进度（不再互相"覆盖"）
  *   2. 每个任务独立 SSE 订阅：刷新页面后自动恢复进行中任务的进度
  *   3. queued 事件：并发上限已满时显示排队位次
- *   4. 错误按 413（超出体积上限）/ 503（服务端解析环境缺失）分流提示
+ *   4. 手动取消：进行中任务可取消（协作式，在下一个检查点停止）
+ *   5. 错误按 413（超出体积上限）/ 503（服务端解析环境缺失）分流提示
  */
 import { onMounted, onUnmounted, ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -38,6 +39,7 @@ interface TaskItem extends ServerTask {
     liveItemCount: number  // 实时已提取条目数
     ahead: number          // 并发排队位次
     stage: string          // 阶段文案
+    cancelling?: boolean   // 已发起取消、等待任务在检查点停止
 }
 
 // 进行中（非终态）的状态集合
@@ -51,6 +53,7 @@ const STATUS_LABEL: Record<string, string> = {
     generating: '生成中',
     done: '已完成',
     failed: '失败',
+    cancelled: '已取消',
 }
 
 const fileInputRef = ref<HTMLInputElement | null>(null) // 隐藏的 file input
@@ -75,6 +78,7 @@ const badgeClass = (s: string) => ({
     'badge--running': isRunning(s),
     'badge--done': s === 'done',
     'badge--failed': s === 'failed',
+    'badge--cancelled': s === 'cancelled',
 })
 
 /** 进度百分比 */
@@ -92,6 +96,7 @@ const blankTask = (s: ServerTask, prev?: TaskItem): TaskItem => ({
     liveItemCount: prev?.liveItemCount ?? 0,
     ahead: prev?.ahead ?? 0,
     stage: prev?.stage ?? '',
+    cancelling: prev?.cancelling ?? false,
 })
 
 /** 局部更新某个任务（不重建数组，避免进度闪烁） */
@@ -166,13 +171,18 @@ const applyEvent = (id: string, evt: Record<string, unknown>) => {
                 downloadUrl: String(evt.downloadUrl ?? ''),
                 inlineUrl: String(evt.inlineUrl ?? ''),
                 stage: '',
+                cancelling: false,
             })
+            break
+        case 'cancelled':
+            patchTask(id, { status: 'cancelled', stage: '', cancelling: false })
             break
         case 'error':
             patchTask(id, {
                 status: 'failed',
                 errorMsg: String(evt.message ?? '提取失败'),
                 stage: '',
+                cancelling: false,
             })
             break
     }
@@ -220,7 +230,7 @@ const subscribe = async (id: string) => {
         }
     } finally {
         subs.delete(id)
-        // 连接结束（完成/失败/排队等待）后与后端对齐一次状态
+        // 连接结束（完成/失败/取消/排队等待）后与后端对齐一次状态
         void loadTasks()
     }
 }
@@ -240,6 +250,29 @@ const loadTasks = async () => {
         }
     } catch {
         // 列表拉取失败不影响主流程
+    }
+}
+
+/**
+ * 取消任务（协作式）
+ * 后端立即落库为 cancelled，后台任务在下一个检查点停止；
+ * 因此点击后按钮进入「取消中…」，直到收到 cancelled 事件或刷新列表
+ */
+const cancelTask = async (t: TaskItem) => {
+    if (t.cancelling) return
+    patchTask(t.id, { cancelling: true })
+    try {
+        const res = await fetch(`${API_BASE}/tender/documents/${t.id}/cancel`, { method: 'POST' })
+        if (!res.ok) {
+            patchTask(t.id, { cancelling: false })
+            errorMsg.value = describeError(res.status, await readErrorText(res))
+            return
+        }
+        // 后端已落库，先本地标记；SSE 随后会推送 cancelled 事件
+        patchTask(t.id, { status: 'cancelled', stage: '', cancelling: false })
+    } catch (e) {
+        patchTask(t.id, { cancelling: false })
+        errorMsg.value = e instanceof Error ? e.message : String(e)
     }
 }
 
@@ -342,7 +375,7 @@ const onFileChange = async (e: Event) => {
                         <span class="badge" :class="badgeClass(t.status)">{{ statusLabel(t.status) }}</span>
                     </div>
 
-                    <!-- 进行中：进度条 + 阶段文案 + 实时条目数 -->
+                    <!-- 进行中：进度条 + 阶段文案 + 实时条目数 + 取消按钮 -->
                     <template v-if="isRunning(t.status)">
                         <div class="progress-bar">
                             <div class="progress-bar__fill" :style="{ width: percentOf(t) + '%' }"></div>
@@ -351,7 +384,14 @@ const onFileChange = async (e: Event) => {
                             <span>{{ t.stage || '准备中' }}</span>
                             <span>已提取 <strong>{{ t.liveItemCount }}</strong> 条</span>
                         </div>
-                        <p class="task-item__hint">页数 {{ t.pageCount }} · 进度 {{ t.blockIndex }}/{{ t.blockTotal }} 块</p>
+                        <div class="task-item__foot">
+                            <span class="task-item__hint">
+                                页数 {{ t.pageCount }} · 进度 {{ t.blockIndex }}/{{ t.blockTotal }} 块
+                            </span>
+                            <button class="btn" :disabled="t.cancelling" @click="cancelTask(t)">
+                                {{ t.cancelling ? '取消中…' : '取消任务' }}
+                            </button>
+                        </div>
                     </template>
 
                     <!-- 已完成：统计 + 操作入口 -->
@@ -371,6 +411,11 @@ const onFileChange = async (e: Event) => {
                                 <span>下载 HTML</span>
                             </a>
                         </div>
+                    </template>
+
+                    <!-- 已取消 -->
+                    <template v-else-if="t.status === 'cancelled'">
+                        <div class="task-item__muted">任务已取消（已提取的内容未保留）</div>
                     </template>
 
                     <!-- 失败：错误原因 -->
@@ -505,6 +550,12 @@ const onFileChange = async (e: Event) => {
     border-color: #fecaca;
 }
 
+.badge--cancelled {
+    color: var(--ink-600);
+    background: var(--ink-100);
+    border-color: var(--ink-100);
+}
+
 /* 进度条轨道 */
 .progress-bar {
     height: 8px;
@@ -541,10 +592,24 @@ const onFileChange = async (e: Event) => {
     }
 }
 
+/* 进度行底部：左侧细节提示，右侧取消按钮 */
+.task-item__foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    margin-top: var(--sp-2);
+}
+
 .task-item__hint {
-    margin: var(--sp-2) 0 0;
     font-size: 12px;
     color: var(--ink-400);
+}
+
+/* 已取消的说明文字 */
+.task-item__muted {
+    font-size: 13px;
+    color: var(--ink-500);
 }
 
 /* 失败原因 */

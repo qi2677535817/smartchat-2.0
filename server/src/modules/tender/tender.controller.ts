@@ -30,6 +30,10 @@ import { PythonPipelineService } from "../pdf-pipeline/python-pipeline.service";
 // 提取默认模型（与前端模型列表一致，可用 ?model= 覆盖）
 const DEFAULT_EXTRACT_MODEL = 'deepseek-v4-flash'
 
+// SSE 终态事件：收到即关闭连接（cancelled 表示用户主动取消）
+const isTerminalEvent = (type: string): boolean =>
+    type === 'done' || type === 'error' || type === 'cancelled'
+
 // 说明：锚点修正重试（MAX_ANCHOR_RETRY / pickCandidateAnchor）与分类归一化（normalizeCat）
 // 等提取编排逻辑，已随「任务驻留」重构迁至 TenderTaskService（见 tender-task.service.ts）
 
@@ -145,14 +149,14 @@ export class TenderController {
             this.taskService
                 .join(id, model || DEFAULT_EXTRACT_MODEL, (evt) => {
                     observer.next({ data: evt });
-                    if (evt.type === 'done' || evt.type === 'error') finish();
+                    if (isTerminalEvent(String(evt.type))) finish();
                 })
                 .then(({ off: offFn, immediate }) => {
                     off = offFn;
                     // 补发当前快照，使新订阅者立即对齐状态（刷新后重连的关键）
                     for (const evt of immediate) {
                         observer.next({ data: evt });
-                        if (evt.type === 'done' || evt.type === 'error') finish();
+                        if (isTerminalEvent(String(evt.type))) finish();
                     }
                 })
                 .catch((e) => {
@@ -179,6 +183,15 @@ export class TenderController {
         const doc = await this.tenderService.findDocument(id);
         if (!doc) throw new NotFoundException('记录不存在');
         return this.toSummary(doc);
+    }
+
+    // POST /tender/documents/:id/cancel —— 取消进行中的提取任务
+    // 协作式取消：立即落库为 cancelled，后台任务在下一个检查点（块边界 / 生成前后）停止
+    @Post('documents/:id/cancel')
+    async cancelDocument(@Param('id') id: string) {
+        const res = await this.taskService.cancel(id);
+        if (!res.ok) throw new NotFoundException('记录不存在');
+        return { id, status: res.status };
     }
 
     // 记录 → 前端任务摘要

@@ -96,6 +96,25 @@
 
 **commit**：`fix(client): 标书复核页改为多任务视图，修复新建任务覆盖既有任务进度的问题`
 
+## 7. 任务手动取消
+
+> 需求：任务列表中的进行中任务支持手动取消。
+
+- [ ] 7.1 `TenderExtractionService.extract()` 增加**协作式取消检查**（`isCancelled` 回调，在块边界检查；返回值增加 `cancelled`）
+- [ ] 7.2 `TenderTaskService`：`TaskEntry.cancelled` 标记 + `cancel(id)` + `finishCancelled()`，在「拿到并发槽后」「提取返回后」「生成完成前」三个检查点读取标记
+- [ ] 7.3 新增 `POST /tender/documents/:id/cancel`；SSE 新增 `cancelled` 事件
+- [ ] 7.4 `TenderView.vue`：进行中任务显示「取消任务」按钮，点击后进入「取消中…」，收到 `cancelled` 后展示「已取消」
+
+**验收**：
+- 提取中点「取消任务」→ 变为「取消中…」，当前块跑完后转为「已取消」（`status === 'cancelled'`）
+- 排队中的任务取消 → 拿到槽位后立刻让出，不执行提取
+- 取消后 `GET /tender/documents/:id` 返回 `status = 'cancelled'`
+- 连续「提交 → 取消」3 次后，并发闸门活动任务数归 0（无槽位泄漏）
+- 对已终态（done / failed / cancelled）任务调用取消接口 → 状态不变
+- `cd server && npm run build` 与 `cd client && npx vue-tsc --noEmit` 均退出码 0
+
+**commit**：`feat(tender): 支持手动取消进行中的提取任务`
+
 ## 明确不做（越界即停）
 
 - 不改 `build_review_html.py` / `extract_text.py` 等任何 skill 脚本（红线 1/6）

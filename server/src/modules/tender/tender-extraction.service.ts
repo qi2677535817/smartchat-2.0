@@ -42,8 +42,10 @@ export class TenderExtractionService {
         callbacks: {
             onStart?: (pageCount: number, blockTotal: number) => void
             onProgress?: (blockIndex: number, blockTotal: number, itemCount: number) => void
+            // 取消检查：每块开始前调用；返回 true 则中止后续块（已完成块的结果照常返回）
+            isCancelled?: () => boolean
         } = {},
-    ): Promise<{ items: RequirementItem[]; failedBlocks: number }> {
+    ): Promise<{ items: RequirementItem[]; failedBlocks: number; cancelled: boolean }> {
         const pagesPath = path.join(workDir, "pages.json")
         const { pageCount, pages } = await this.pipeline.extractPages(pdfPath, pagesPath)
         if (!pages || pages.length === 0) {
@@ -56,7 +58,14 @@ export class TenderExtractionService {
 
         const all: RequirementItem[] = []
         let failedBlocks = 0
+        let cancelled = false
         for (let i = 0; i < blocks.length; i++) {
+            // 用户取消：在块边界处停下，不打断正在进行的模型调用（单次调用无法中途 abort）
+            if (callbacks.isCancelled?.()) {
+                cancelled = true
+                this.logger.log(`提取被取消：已完成 ${i}/${blocks.length} 块`)
+                break
+            }
             const text = blocks[i].map(p => p.text).join("\n")
             try {
                 const items = await this.extractBlock(text, model)
@@ -71,8 +80,8 @@ export class TenderExtractionService {
         }
 
         const deduped = this.dedupe(all)
-        this.logger.log(`去重：${all.length} → ${deduped.length} 条，失败块 ${failedBlocks}`)
-        return { items: deduped, failedBlocks }
+        this.logger.log(`去重：${all.length} → ${deduped.length} 条，失败块 ${failedBlocks}${cancelled ? '（已取消）' : ''}`)
+        return { items: deduped, failedBlocks, cancelled }
     }
 
     // 分块：每 size 页一块，块间重叠 overlap 页（避免边界句子被切断）
