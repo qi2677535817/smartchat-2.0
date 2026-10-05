@@ -77,3 +77,12 @@ Get-ChildItem -Recurse -File tender-material-checklist | Get-FileHash -Algorithm
 3. SQLite 单文件库，不支持多实例扩展。
 4. `data-cache/tender/` 产物无自动清理策略。
 5. 内存队列不跨进程重启，中断任务需人工重试（不自动恢复）。
+
+## 五、验收阶段发现的缺陷与处置
+
+| 发现 | 现象 | 根因 | 处置 | 状态 |
+|---|---|---|---|---|
+| 任务 4 验收 | 提取中刷新页面后再点「上传 PDF」，前一任务的进度视图被「覆盖」 | **前端**仅有单套任务状态（`fileName`/`result`/`progress`），新建任务即重置；**后端实为按 id 独立并行，无覆盖行为** | `TenderView.vue` 改为多任务列表视图，每任务独立订阅与进度模型（见 tasks 6） | 已修复，待人工回归 |
+
+> 定性说明：该问题**不属于后端缺陷**。`TenderTaskService` 以 `Map<id, TaskEntry>` 管理任务，不同 id 完全独立；
+> 并发闸门仅在同时执行数超过 `TENDER_MAX_CONCURRENCY` 时排队，不会取消或覆盖任何任务。
