@@ -12,9 +12,12 @@ import {
     Sse,
     UploadedFile,
     UploadedFiles,
+    UseFilters,
     UseInterceptors,
 } from "@nestjs/common";
 import { FileFieldsInterceptor, FileInterceptor } from "@nestjs/platform-express";
+import { uploadOptions } from "./upload.config";
+import { UploadExceptionFilter } from "./upload.filter";
 import { Observable } from "rxjs";
 import type { Response } from "express";
 import * as fs from "node:fs";
@@ -55,8 +58,11 @@ interface MulterFile {
     originalname: string
     encoding: string
     mimetype: string
-    buffer: Buffer
     size: number
+    // 上传已改用磁盘存储（upload.config.ts），以 path 为准；
+    // buffer 仅在 memoryStorage 下存在，保留可选声明以免破坏既有类型引用
+    buffer?: Buffer
+    path?: string
 }
 
 // 文件名 UTF-8 还原（multer 按 latin1 解码中文文件名）
@@ -68,6 +74,7 @@ const decodeFilename = (originalname: string, mimetype: string): { filename: str
 }
 
 @Controller('tender')
+@UseFilters(UploadExceptionFilter)
 export class TenderController {
     private readonly logger = new Logger(TenderController.name)
 
@@ -84,46 +91,60 @@ export class TenderController {
     @UseInterceptors(FileFieldsInterceptor([
         { name: 'file', maxCount: 1 },
         { name: 'items', maxCount: 1 },
-    ]))
+    ], uploadOptions))
     async review(
         @UploadedFiles() files: { file?: MulterFile[]; items?: MulterFile[] },
     ) {
         const pdf = files.file?.[0];
         const items = files.items?.[0];
-        if (!pdf) throw new BadRequestException('缺少 file 字段（招标 PDF）');
-        if (!items) throw new BadRequestException('缺少 items 字段（条目 JSON 文件）');
-        const { filename, isPdf } = decodeFilename(pdf.originalname, pdf.mimetype)
-        if (!isPdf) throw new BadRequestException('仅支持文字版 PDF');
+        // 磁盘存储：先把临时文件路径全部收集，保证任何分支都能清理，避免 _uploads 目录堆积
+        const tmpFiles = [pdf?.path, items?.path].filter((p): p is string => !!p);
+        try {
+            if (!pdf?.path) throw new BadRequestException('缺少 file 字段（招标 PDF）');
+            if (!items?.path) throw new BadRequestException('缺少 items 字段（条目 JSON 文件）');
+            const { filename, isPdf } = decodeFilename(pdf.originalname, pdf.mimetype)
+            if (!isPdf) throw new BadRequestException('仅支持文字版 PDF');
 
-        const prepared = this.tenderService.prepareItems(items.buffer);
-        const started = Date.now();
-        const { doc, itemsPath } = await this.tenderService.acceptUpload(filename, pdf.buffer, prepared.clean);
+            // 条目 JSON 为 KB 级，读入内存校验可接受
+            const prepared = this.tenderService.prepareItems(await fs.promises.readFile(items.path));
+            const started = Date.now();
+            const { doc, itemsPath } = await this.tenderService.acceptUpload(filename, pdf.path, items.path);
 
-        // 环境与资源前置校验（Python 缺失/资源缺失 → 503）
-        await this.pipeline.precheck();
-        const title = path.basename(doc.filename, path.extname(doc.filename));
-        const outPath = path.join(TENDER_DIR, doc.id, 'review.html');
-        await this.pipeline.buildReviewHtml(doc.path, itemsPath, outPath, title);
+            // 环境与资源前置校验（Python 缺失/资源缺失 → 503）
+            await this.pipeline.precheck();
+            const title = path.basename(doc.filename, path.extname(doc.filename));
+            const outPath = path.join(TENDER_DIR, doc.id, 'review.html');
+            await this.pipeline.buildReviewHtml(doc.path, itemsPath, outPath, title);
 
-        return {
-            id: doc.id,
-            filename: doc.filename,
-            downloadUrl: `/tender/review/${doc.id}/download`,
-            elapsedMs: Date.now() - started,
-        };
+            return {
+                id: doc.id,
+                filename: doc.filename,
+                downloadUrl: `/tender/review/${doc.id}/download`,
+                elapsedMs: Date.now() - started,
+            };
+        } finally {
+            // 成功时文件已被 acceptUpload 移走，这里只清理失败分支的残留（unlink 失败可忽略）
+            await Promise.all(tmpFiles.map(p => fs.promises.unlink(p).catch(() => {})));
+        }
     }
 
     // ==================== 阶段 2：一键到底（自动提取 + 生成界面） ====================
 
     // POST /tender/documents —— 上传招标 PDF 落盘，供自动提取
     @Post('documents')
-    @UseInterceptors(FileInterceptor('file'))
+    @UseInterceptors(FileInterceptor('file', uploadOptions))
     async uploadDocument(@UploadedFile() file: MulterFile) {
-        if (!file) throw new BadRequestException('缺少 file 字段（招标 PDF）');
-        const { filename, isPdf } = decodeFilename(file.originalname, file.mimetype)
-        if (!isPdf) throw new BadRequestException('仅支持文字版 PDF');
-        const { doc } = await this.tenderService.acceptPdf(filename, file.buffer);
-        return { id: doc.id, filename: doc.filename };
+        const tmpPath = file?.path;
+        try {
+            if (!tmpPath) throw new BadRequestException('缺少 file 字段（招标 PDF）');
+            const { filename, isPdf } = decodeFilename(file.originalname, file.mimetype)
+            if (!isPdf) throw new BadRequestException('仅支持文字版 PDF');
+            const { doc } = await this.tenderService.acceptPdf(filename, tmpPath);
+            return { id: doc.id, filename: doc.filename };
+        } finally {
+            // 成功时临时文件已被 acceptPdf 移走，unlink 失败可忽略
+            if (tmpPath) await fs.promises.unlink(tmpPath).catch(() => {});
+        }
     }
 
     // GET /tender/documents/:id/extract —— SSE：自动提取条目并生成复核 HTML
